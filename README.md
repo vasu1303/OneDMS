@@ -114,12 +114,12 @@ in real values before starting the backend.
 cd backend
 python -m venv .venv
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe run.py
 ```
 
 These commands use the virtual environment directly, so PowerShell activation is
-not required. Runtime-only installations can use `requirements.txt` instead.
+not required.
 
 ### Backend: macOS / Linux
 
@@ -127,7 +127,7 @@ not required. Runtime-only installations can use `requirements.txt` instead.
 cd backend
 python3 -m venv .venv
 test -f .env || cp .env.example .env
-.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python run.py
 ```
 
@@ -189,17 +189,9 @@ available when services fail or are unconfigured. Missing storage fields report
 `not_configured`. Set `DEBUG=False` and restrict access to the operational endpoint
 with deployment ingress controls before exposing the POC publicly.
 
-## Tests And Build
+## Build
 
-Backend tests use mocks and botocore stubs; they do not need live credentials:
-
-```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pytest tests -q
-.\.venv\Scripts\python.exe -m pip check
-```
-
-On macOS/Linux, use `.venv/bin/python` instead. To compile the frontend:
+To compile the frontend:
 
 ```bash
 cd frontend
@@ -234,11 +226,7 @@ OneDMS/
 ├── pipeline/       # Databricks / PySpark ETL
 ├── ai/             # AI extraction, mapping, validation
 ├── shared/         # Canonical schema, constants, enums
-├── data/           # Synthetic test data (PDF, Excel, API, flat)
-├── docs/           # Architecture, API docs, runbooks
-├── infra/          # CI/CD scaffolding
-├── scripts/        # Dev utilities
-└── tests/          # Integration & E2E tests
+└── docs/           # Architecture, API docs, runbooks
 ```
 
 ## Team
