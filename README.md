@@ -52,10 +52,12 @@ PostgreSQL is for structured invoice data and object references; original PDFs,
 spreadsheets, and other source files belong in the private `onedmsinvoices` bucket.
 Credentials and storage access stay in the backend, never in the browser.
 
-The invoice tables described in [the database design](docs/architecture/OneDMS_Database_Design.md),
-ingestion connectors, AI extraction, validation workflows, and Databricks/PySpark
-jobs are planned, not implemented. Startup does not create tables, migrations,
-buckets, or files. There is no upload API or authentication implementation yet.
+The seven invoice tables described in [the database design](docs/architecture/OneDMS_Database_Design.md)
+are implemented with SQLAlchemy models and an explicit schema setup command. An idempotent seed
+script supplies synthetic demo data. Ingestion connectors, AI extraction,
+validation workflows, and Databricks/PySpark jobs remain planned. Startup does not
+create tables, buckets, or files. There is no upload API or
+authentication implementation yet.
 
 ## Prerequisites
 
@@ -115,6 +117,7 @@ cd backend
 python -m venv .venv
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m app.setup_db
 .\.venv\Scripts\python.exe run.py
 ```
 
@@ -128,6 +131,7 @@ cd backend
 python3 -m venv .venv
 test -f .env || cp .env.example .env
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m app.setup_db
 .venv/bin/python run.py
 ```
 
@@ -151,6 +155,55 @@ never put database or storage credentials in the frontend environment.
 | Backend | http://localhost:8000 |
 | API docs / interactive testing | http://localhost:8000/docs |
 | API schema | http://localhost:8000/openapi.json |
+
+## Database Setup And Demo Data
+
+From the repository root, run these PowerShell commands against the database in
+`backend/.env`. Choose a development branch and back up existing data before
+changing the schema:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m app.setup_db
+.\.venv\Scripts\python.exe -m app.seed
+```
+
+On macOS/Linux, substitute `.venv/bin/python` for `.\.venv\Scripts\python.exe`.
+The setup command creates exactly `dealers`, `dms_systems`, `inbound_documents`,
+`mapping_configs`, `validation_rules`, `standardized_invoices`, and
+`invoice_line_items`, with the documented foreign keys, unique constraints, and
+indexes. IDs are generated `BIGINT` integers, not UUIDs. Status/tier checks reject
+unsupported values. Partial unique indexes allow one active mapping per source
+DMS/document type or OEM target/document type. A
+PostgreSQL trigger refreshes invoice `updated_at` even for direct SQL updates.
+There is no schema-version table or Alembic dependency.
+
+The command upgrades the previous six-table schema without deleting dealers,
+documents, invoices, or line items. It remaps foreign keys to integer IDs, carries
+the latest failed processing error onto the document, retires processing-attempt
+history, and removes the old version table. A conflicting supplier/dealer
+relationship or unexpected schema stops the update and rolls back. Run setup
+without concurrent invoice writes; lock waits are bounded. Future schema changes
+must be handled explicitly; `create_all` does not reconcile arbitrary alterations.
+
+The seed adds two synthetic dealers, two DMS systems (JSON API and CSV upload),
+three inbound documents, three invoices, five line items, three mapping configs,
+and seven validation rules. Examples include spare parts with a null
+`chassis_number`, a truck with a synthetic chassis number, and an invoice awaiting
+review. Amounts use exact decimals and reconcile with the line items.
+The two dealers deliberately share an invoice number to demonstrate that invoice
+numbers are not globally unique.
+
+Seeding uses generated integer IDs, natural-key lookups, and one transaction.
+Reruns retain existing demo records and active mappings without overwriting edits;
+failures roll back the transaction. Mapping and validation JSON are configuration
+examples, not an implemented mapping/rules engine. Vehicle-specific chassis
+requirements are described by a conditional rule; the database column remains
+nullable for spare parts.
+The script is **metadata-only**: it does not upload original files, and storage
+keys remain null rather than pointing to nonexistent objects. The storage provider
+is configured once in the backend, not stored on every document. The CSV
+filename represents a synthetic source, not an actual retained file.
 
 ## Verify Connections
 

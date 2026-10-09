@@ -1,235 +1,298 @@
-# OneDMS POC — Database Design
+# OneDMS POC — Final Database Design
 
-## 1. Purpose and scope
+## 1. POC scope
 
-OneDMS is an interoperability layer between dealer management systems (DMSs) and the OEM (Daimler Truck). For this proof of concept, the scope is **invoice ingestion and standardization only**.
+OneDMS standardizes **invoices only** for the POC. Two or more dealers may use different DMS platforms and send invoices in different formats. OneDMS retains the source, maps each input into a common invoice structure, validates it, supports human review, and prepares the OEM output.
 
-The POC should demonstrate that invoices arriving from two different DMSs and in different formats can be:
-1. Received and tracked.
-2. Stored in their original form for auditability.
-3. Extracted and normalized into a canonical invoice representation.
-4. Validated and flagged for human review when necessary.
-5. Prepared for delivery to the OEM.
+| Tier | Input | POC handling |
+|---|---|---|
+| Tier 1 — large dealers | API / JSON | Parse the payload directly; retain raw JSON when required for traceability |
+| Tier 2 — medium dealers | CSV / Excel / XML | Store the source file in object storage and parse it |
+| Tier 3 — legacy dealers | PDF / email attachment | Store the source file, extract fields with OCR/LLM, then validate |
 
-### Supported input tiers
+**Final database scope: 7 tables.** The original files live in object storage, not PostgreSQL. The schema does not include order/quote workflows, user/role management, or a separate processing-attempt history because they are outside this invoice-only POC.
 
-| Tier | Typical dealer | Input | Processing |
-|---|---|---|---|
-| Tier 1 | Large | API / JSON | Parse payload directly; optionally retain raw payload |
-| Tier 2 | Medium | CSV / Excel / XML | Store original file and parse structured content |
-| Tier 3 | Legacy | PDF / email attachments | Store original file; extract using OCR/LLM, then validate |
-
-All tiers converge on the same canonical invoice model. The POC does not replace the dealer's existing DMS.
-
-## 2. Architecture overview
+## 2. Architecture
 
 ```mermaid
 flowchart TD
-    A["Tier 1: Dealer API / JSON"]
-    B["Tier 2: CSV / Excel / XML"]
-    C["Tier 3: PDF / Email Attachment"]
+    A["Tier 1: API / JSON"] --> I["OneDMS Ingestion"]
+    B["Tier 2: CSV / Excel / XML"] --> I
+    C["Tier 3: PDF / Email Attachment"] --> I
 
-    A --> D["OneDMS Ingestion Layer"]
-    B --> D
-    C --> D
+    I --> DB[("Neon PostgreSQL")]
+    I --> OS[("Private Object Storage")]
 
-    D --> E[("Neon PostgreSQL")]
-    D --> F[("Private Object Storage")]
+    DB --> MAP["Load source mapping config"]
+    OS --> EXT["Parse / OCR / LLM extraction"]
+    MAP --> NORM["Normalize to canonical invoice"]
+    EXT --> NORM
+    NORM --> VAL["Validation engine"]
+    DB --> RULES["Load active validation rules"]
+    RULES --> VAL
 
-    F --> G["Processing Worker"]
-    E --> G
-    G --> H["Extract / Parse / Normalize"]
-    H --> I["Canonical Invoice JSON"]
-    I --> J["Validation Rules"]
-    J --> K{"Valid?"}
+    VAL --> DEC{"Validation result"}
+    DEC -->|Valid| OUT["OEM output mapping"]
+    DEC -->|Needs review| REVIEW["Auditor dashboard"]
+    DEC -->|Invalid| ERR["Flag for correction / retry"]
+    OUT --> OEM["Daimler OEM / ERP adapter"]
 
-    K -->|Yes| L["OEM Output Adapter"]
-    K -->|Needs review| M["Auditor Dashboard"]
-    K -->|Invalid| N["Error / Retry Workflow"]
-    M -->|Approve or correct| L
-
-    E --> M
-    F --> M
+    DB --> REVIEW
+    REVIEW -->|View original securely| OS
+    REVIEW -->|Approve / correct| OUT
 ```
 
-**Implementation note:** Neon PostgreSQL stores structured data and object references. Store original PDFs and uploaded files in object storage, not as binary data in relational tables. Use a private bucket and issue authorized, short-lived access URLs or proxy downloads through the backend.
+The boxes describe logical components, not necessarily separate services. For the POC, ingestion, normalization and validation can run inside one backend application.
 
-Neon PostgreSQL does not automatically mean that object storage is available in every Neon project. Verify that the chosen Neon-integrated object-storage feature is available to your account; otherwise, use an external object store such as S3 or Cloudflare R2.
+## 3. Final tables at a glance
 
-## 3. Tables at a glance
-
-The POC uses six tables:
-
-| Table | Responsibility |
-|---|---|
-| `dealers` | Dealer registry |
-| `dms_systems` | DMS providers and supported integration/input types |
-| `inbound_documents` | Tracks each received payload/file and points to its original stored object |
-| `standardized_invoices` | Canonical, normalized invoice header and processing/review/delivery status |
-| `invoice_line_items` | Individual invoice lines |
-| `processing_runs` | Extraction/normalization attempts, failures and retries |
-
-The actual file contents live in object storage. The `inbound_documents` table stores the object key and metadata.
+| # | Table | Purpose |
+|---:|---|---|
+| 1 | `dealers` | Registry of dealers sending invoices |
+| 2 | `dms_systems` | DMS provider/configuration identity and integration tier |
+| 3 | `inbound_documents` | Tracks every received invoice submission and points to the original file when one exists |
+| 4 | `mapping_configs` | Configurable inbound DMS-to-canonical mapping and canonical-to-OEM output mapping |
+| 5 | `validation_rules` | Configurable invoice validation rules used by the rules engine |
+| 6 | `standardized_invoices` | Canonical invoice header, totals and processing/review/delivery statuses |
+| 7 | `invoice_line_items` | Canonical invoice line items |
 
 ## 4. Table definitions
 
-Types below are PostgreSQL types. Use UUIDs for primary and foreign keys. `TIMESTAMPTZ` is preferred for event timestamps.
+Use PostgreSQL `BIGINT GENERATED BY DEFAULT AS IDENTITY` primary keys and `BIGINT` foreign keys, not UUIDs. Use `TIMESTAMPTZ` for event timestamps and `JSONB` for configuration/raw flexible payloads. Keep regular columns for fields queried or validated frequently. The database contains only these seven business tables, with no schema-version table.
 
 ### 4.1 `dealers`
 
-One row per dealer known to the OEM.
+One row per dealer.
 
-| Column | Type | Constraints / notes |
+| Column | Type | Rules / purpose |
 |---|---|---|
-| `id` | `UUID` | Primary key |
-| `dealer_code` | `VARCHAR(50)` | Unique, not null; OEM-assigned code |
-| `name` | `VARCHAR(255)` | Not null |
-| `gstin` | `VARCHAR(20)` | Nullable; tax identifier where applicable |
-| `created_at` | `TIMESTAMPTZ` | Not null, default `now()` |
+| `id` | `BIGINT` | Generated identity PK |
+| `dealer_code` | `VARCHAR(50)` | UNIQUE, NOT NULL; OEM dealer code |
+| `name` | `VARCHAR(255)` | NOT NULL |
+| `gstin` | `VARCHAR(20)` | Nullable; tax identifier when applicable |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
 
 ### 4.2 `dms_systems`
 
-Describes DMS products/systems that dealers use. Multiple dealers can use the same DMS. A dealer may use more than one DMS over time.
+One row per DMS system/integration profile known to OneDMS. Multiple dealers can use the same DMS. Record the exact source DMS on each submission.
 
-| Column | Type | Constraints / notes |
+| Column | Type | Rules / purpose |
 |---|---|---|
-| `id` | `UUID` | Primary key |
-| `name` | `VARCHAR(255)` | Not null |
-| `integration_tier` | `SMALLINT` | Not null; POC values 1, 2, or 3 |
-| `integration_method` | `VARCHAR(20)` | Example: `API`, `UPLOAD`, `EMAIL` |
-| `input_format` | `VARCHAR(20)` | Example: `JSON`, `CSV`, `XLSX`, `XML`, `PDF` |
+| `id` | `BIGINT` | Generated identity PK |
+| `name` | `VARCHAR(255)` | NOT NULL |
+| `integration_tier` | `SMALLINT` | NOT NULL; `1`, `2` or `3` |
+| `integration_method` | `VARCHAR(20)` | NOT NULL; e.g. `API`, `UPLOAD`, `EMAIL` |
+| `input_format` | `VARCHAR(20)` | NOT NULL; e.g. `JSON`, `CSV`, `XLSX`, `XML`, `PDF` |
 
-For a future production system, a DMS may support several input formats. For this POC, one representative format per configured integration is sufficient.
+For the POC, one representative input format per configured DMS profile is enough. A production DMS may need multiple supported formats/profiles.
 
 ### 4.3 `inbound_documents`
 
-An intake register for every received submission. Use one row per received file or API submission. The original file is not stored in this table.
+One row per received invoice file or API submission. Stores metadata and the object reference; it does not store PDF/Excel binaries.
 
-| Column | Type | Constraints / notes |
+| Column | Type | Rules / purpose |
 |---|---|---|
-| `id` | `UUID` | Primary key |
-| `dealer_id` | `UUID` | Not null; FK → `dealers.id` |
-| `dms_id` | `UUID` | Not null; FK → `dms_systems.id` |
-| `document_type` | `VARCHAR(30)` | Not null; use `INVOICE` for this POC |
+| `id` | `BIGINT` | Generated identity PK |
+| `dealer_id` | `BIGINT` | NOT NULL, FK → `dealers.id` |
+| `dms_id` | `BIGINT` | NOT NULL, FK → `dms_systems.id` |
+| `document_type` | `VARCHAR(30)` | NOT NULL; `INVOICE` for this POC |
 | `original_file_name` | `TEXT` | Nullable for API submissions |
-| `mime_type` | `VARCHAR(100)` | Nullable |
+| `mime_type` | `VARCHAR(100)` | Nullable for API submissions |
 | `file_size_bytes` | `BIGINT` | Nullable |
-| `storage_provider` | `VARCHAR(30)` | Nullable for API-only submissions |
-| `storage_key` | `TEXT` | Nullable for API-only submissions; object key/asset ID, not a temporary URL |
-| `checksum_sha256` | `VARCHAR(64)` | Nullable; useful for duplicate detection |
-| `received_at` | `TIMESTAMPTZ` | Not null, default `now()` |
-| `status` | `VARCHAR(30)` | Not null; e.g. `RECEIVED`, `PROCESSING`, `COMPLETED`, `FAILED` |
+| `storage_key` | `TEXT` | Nullable for API-only submissions; object key/asset ID, not an expiring signed URL |
+| `checksum_sha256` | `VARCHAR(64)` | Nullable; source file hash for duplicate checks |
+| `raw_payload` | `JSONB` | Nullable; optional raw API JSON payload |
+| `received_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
+| `status` | `VARCHAR(30)` | NOT NULL; `RECEIVED`, `PROCESSING`, `COMPLETED`, `REVIEW_REQUIRED`, `FAILED` |
+| `error_message` | `TEXT` | Nullable; latest actionable processing error, with no secrets/sensitive full payloads |
 
-For Tier 1 API submissions, raw JSON can be retained in a JSONB column or stored as an object when raw-payload audit requirements justify it. Avoid uploading every API request as a file unless there is a reason.
+**Storage rule:** If an actual file is received, upload it to the configured private object storage and save its `storage_key`. The provider is the same for every document and is configured once in the backend, not stored per row. For API JSON, use `raw_payload` if retaining the request body is needed; object storage is optional for API submissions.
 
-### 4.4 `standardized_invoices`
+### 4.4 `mapping_configs`
 
-The main canonical invoice header. It presents a consistent model regardless of the originating DMS.
+Stores both mapping directions so configuration is not hardcoded into the application:
 
-| Column | Type | Constraints / notes |
+- `SOURCE_TO_CANONICAL`: source field names/structures from a specific DMS → OneDMS canonical invoice fields.
+- `CANONICAL_TO_OEM`: canonical invoice fields → the output structure expected by Daimler's target system.
+
+| Column | Type | Rules / purpose |
 |---|---|---|
-| `id` | `UUID` | Primary key |
-| `document_id` | `UUID` | Not null, unique; FK → `inbound_documents.id` |
-| `invoice_number` | `VARCHAR(100)` | Not null; invoice number from source |
-| `invoice_date` | `DATE` | Not null |
-| `supplier_dealer_id` | `UUID` | Not null; FK → `dealers.id` |
-| `buyer_oem_id` | `VARCHAR(100)` | Not null; OEM entity identifier |
-| `currency` | `VARCHAR(3)` | Not null; ISO currency code, e.g. `INR` |
-| `subtotal` | `NUMERIC(14,2)` | Not null; before taxes |
-| `tax_amount` | `NUMERIC(14,2)` | Not null |
-| `total_amount` | `NUMERIC(14,2)` | Not null |
-| `canonical_payload` | `JSONB` | Not null; full normalized representation and extensible fields |
-| `validation_status` | `VARCHAR(30)` | Not null; `PENDING`, `VALID`, `INVALID`, `REVIEW_REQUIRED` |
-| `review_status` | `VARCHAR(30)` | Not null; `NOT_REQUIRED`, `PENDING`, `APPROVED`, `REJECTED` |
-| `oem_delivery_status` | `VARCHAR(30)` | Not null; `NOT_SENT`, `SENT`, `FAILED` |
-| `created_at` | `TIMESTAMPTZ` | Not null, default `now()` |
-| `updated_at` | `TIMESTAMPTZ` | Not null, default `now()` |
+| `id` | `BIGINT` | Generated identity PK |
+| `mapping_name` | `VARCHAR(150)` | NOT NULL |
+| `mapping_direction` | `VARCHAR(30)` | NOT NULL; `SOURCE_TO_CANONICAL` or `CANONICAL_TO_OEM` |
+| `dms_id` | `BIGINT` | Nullable FK → `dms_systems.id`; required for `SOURCE_TO_CANONICAL`, null for `CANONICAL_TO_OEM` |
+| `target_system` | `VARCHAR(100)` | Nullable; required for `CANONICAL_TO_OEM`, e.g. `DAIMLER_ERP` |
+| `document_type` | `VARCHAR(30)` | NOT NULL; `INVOICE` for this POC |
+| `mapping_config` | `JSONB` | NOT NULL; field paths, transformations and mapping options |
+| `version` | `INTEGER` | NOT NULL, default `1` |
+| `is_active` | `BOOLEAN` | NOT NULL, default `TRUE` |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
 
-**Why both regular columns and `canonical_payload`?** Regular columns make filtering, indexing, validation and reporting straightforward. JSONB keeps less common or evolving fields flexible without adding new columns for every source-specific field.
+Add a check constraint so an inbound mapping must have `dms_id` and no `target_system`, while an OEM output mapping must have `target_system` and no `dms_id`. Keep only one active mapping per DMS/document type for inbound mapping, and one active mapping per target system/document type for OEM output. Older versions can remain inactive for traceability.
 
-**Relationship assumption:** This POC assumes one inbound document produces at most one invoice. If one file can contain multiple invoices, remove the unique constraint from `document_id` and model one document to many invoices.
+Example **inbound** `mapping_config`:
 
-### 4.5 `invoice_line_items`
+```json
+{
+  "invoice_number": "invoiceNo",
+  "invoice_date": "billDate",
+  "currency": "currencyCode",
+  "total_amount": "grandTotal",
+  "line_items": {
+    "source_field": "items",
+    "item_code": "sku",
+    "quantity": "qty",
+    "unit_price": "rate"
+  }
+}
+```
 
-One row per vehicle, part or other line item on an invoice.
+Example **outbound** `mapping_config`:
 
-| Column | Type | Constraints / notes |
+```json
+{
+  "invoiceNumber": "invoice_number",
+  "invoiceDate": "invoice_date",
+  "supplierCode": "supplier_dealer_code",
+  "currencyCode": "currency",
+  "grossAmount": "total_amount"
+}
+```
+
+These examples are illustrative: the exact field paths must match the sample DMS inputs and the OEM target specification. The mapping engine should use deterministic transformations where possible; an LLM is mainly useful for unstructured PDFs/emails.
+
+### 4.5 `validation_rules`
+
+Stores configurable rules for checking standardized invoices. The application executes these rules deterministically; JSON configuration describes the rule and its parameters.
+
+| Column | Type | Rules / purpose |
 |---|---|---|
-| `id` | `UUID` | Primary key |
-| `invoice_id` | `UUID` | Not null; FK → `standardized_invoices.id` |
-| `line_number` | `INTEGER` | Not null; position in invoice |
-| `item_code` | `VARCHAR(100)` | Nullable; product/part code |
-| `description` | `TEXT` | Not null |
-| `quantity` | `NUMERIC(12,3)` | Not null |
-| `unit_price` | `NUMERIC(14,2)` | Not null |
-| `discount_amount` | `NUMERIC(14,2)` | Not null, default `0` |
-| `taxable_amount` | `NUMERIC(14,2)` | Not null |
+| `id` | `BIGINT` | Generated identity PK |
+| `rule_code` | `VARCHAR(80)` | UNIQUE, NOT NULL; e.g. `INVOICE_TOTAL_RECONCILIATION` |
+| `rule_name` | `VARCHAR(200)` | NOT NULL |
+| `document_type` | `VARCHAR(30)` | NOT NULL; `INVOICE` |
+| `rule_config` | `JSONB` | NOT NULL; rule type, fields, tolerances or parameters |
+| `severity` | `VARCHAR(20)` | NOT NULL; `ERROR` or `WARNING` |
+| `is_active` | `BOOLEAN` | NOT NULL, default `TRUE` |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
+
+Example `rule_config`:
+
+```json
+{
+  "type": "TOTAL_RECONCILIATION",
+  "subtotal_field": "subtotal",
+  "tax_field": "tax_amount",
+  "total_field": "total_amount",
+  "tolerance": 0.01
+}
+```
+
+Start with a few useful rules: required fields present, registered dealer, positive/valid quantities and prices, currency supported, header totals reconcile with line values/tax within an agreed rounding tolerance, and duplicate invoices flagged. The precise tax calculation must follow the real source/OEM rules; do not assume one universal formula.
+
+### 4.6 `standardized_invoices`
+
+One canonical invoice header per successfully parsed inbound document. Important fields are normal columns; `canonical_payload` preserves additional normalized fields without requiring a new column for every variation.
+
+| Column | Type | Rules / purpose |
+|---|---|---|
+| `id` | `BIGINT` | Generated identity PK |
+| `document_id` | `BIGINT` | NOT NULL, UNIQUE, FK → `inbound_documents.id` |
+| `invoice_number` | `VARCHAR(100)` | NOT NULL; source invoice number |
+| `invoice_date` | `DATE` | NOT NULL |
+| `buyer_oem_id` | `VARCHAR(100)` | NOT NULL; OEM legal entity/identifier |
+| `currency` | `VARCHAR(3)` | NOT NULL; ISO currency code, e.g. `INR` |
+| `subtotal` | `NUMERIC(14,2)` | NOT NULL |
+| `tax_amount` | `NUMERIC(14,2)` | NOT NULL |
+| `total_amount` | `NUMERIC(14,2)` | NOT NULL |
+| `canonical_payload` | `JSONB` | NOT NULL; complete normalized invoice representation / additional fields |
+| `validation_status` | `VARCHAR(30)` | NOT NULL; `PENDING`, `VALID`, `INVALID`, `REVIEW_REQUIRED` |
+| `review_status` | `VARCHAR(30)` | NOT NULL; `NOT_REQUIRED`, `PENDING`, `APPROVED`, `REJECTED` |
+| `oem_delivery_status` | `VARCHAR(30)` | NOT NULL; `NOT_SENT`, `SENT`, `FAILED` |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL, default `now()` |
+
+The sending dealer can be found through `document_id → inbound_documents.dealer_id`, so the same dealer ID is not redundantly stored on the invoice header. Do not make `invoice_number` globally unique: different dealers can issue the same number.
+
+**POC assumption:** One inbound document contains at most one invoice. If one file can contain multiple invoices, change the `document_id` relationship to one inbound document → many standardized invoices.
+
+### 4.7 `invoice_line_items`
+
+One row per product, vehicle or part on an invoice.
+
+| Column | Type | Rules / purpose |
+|---|---|---|
+| `id` | `BIGINT` | Generated identity PK |
+| `invoice_id` | `BIGINT` | NOT NULL, FK → `standardized_invoices.id` |
+| `line_number` | `INTEGER` | NOT NULL; position on source invoice |
+| `item_code` | `VARCHAR(100)` | Nullable; product/part identifier |
+| `description` | `TEXT` | NOT NULL |
+| `quantity` | `NUMERIC(12,3)` | NOT NULL |
+| `unit_price` | `NUMERIC(14,2)` | NOT NULL |
+| `discount_amount` | `NUMERIC(14,2)` | NOT NULL, default `0` |
+| `taxable_amount` | `NUMERIC(14,2)` | NOT NULL |
 | `tax_rate` | `NUMERIC(5,2)` | Nullable |
-| `tax_amount` | `NUMERIC(14,2)` | Not null |
-| `line_total` | `NUMERIC(14,2)` | Not null |
-| `vin` | `VARCHAR(17)` | Nullable; applicable to vehicle lines |
+| `tax_amount` | `NUMERIC(14,2)` | NOT NULL |
+| `line_total` | `NUMERIC(14,2)` | NOT NULL |
+| `chassis_number` | `VARCHAR(50)` | Nullable; identifies the exact truck for vehicle invoice lines; spare-parts lines may omit it |
 
-Add `UNIQUE (invoice_id, line_number)`. VIN is nullable because spare-parts invoices generally do not identify a vehicle per line. Do not assume the invoice line total formula without confirming whether tax and discounts are included in the source's line total definition.
+Vehicle invoices should include a chassis number for each truck line. Keep the column nullable because spare-parts invoices do not always reference a specific vehicle. Apply vehicle-specific required-field validation using the line's category; do not make chassis numbers mandatory for every invoice line.
 
-### 4.6 `processing_runs`
+Add `UNIQUE (invoice_id, line_number)`. Apply the source/OEM definition for line totals consistently; do not assume whether tax or discounts are included without confirming the invoice convention.
 
-One row per processing attempt. This supports retries and basic debugging.
-
-| Column | Type | Constraints / notes |
-|---|---|---|
-| `id` | `UUID` | Primary key |
-| `document_id` | `UUID` | Not null; FK → `inbound_documents.id` |
-| `attempt_number` | `INTEGER` | Not null |
-| `model_name` | `VARCHAR(100)` | Nullable; model used, if any |
-| `status` | `VARCHAR(20)` | Not null; `RUNNING`, `SUCCESS`, `FAILED` |
-| `error_message` | `TEXT` | Nullable |
-| `started_at` | `TIMESTAMPTZ` | Not null, default `now()` |
-| `completed_at` | `TIMESTAMPTZ` | Nullable |
-
-Add `UNIQUE (document_id, attempt_number)`. Avoid storing API keys, credentials, or full sensitive invoice contents in error messages.
-
-## 5. Entity-relationship diagram
+## 5. Entity relationship diagram
 
 ```mermaid
 erDiagram
     DEALERS ||--o{ INBOUND_DOCUMENTS : submits
     DMS_SYSTEMS ||--o{ INBOUND_DOCUMENTS : originates
-    DEALERS ||--o{ STANDARDIZED_INVOICES : supplies
-    INBOUND_DOCUMENTS ||--o| STANDARDIZED_INVOICES : normalizes_to
-    INBOUND_DOCUMENTS ||--o{ PROCESSING_RUNS : has_attempts
+    DMS_SYSTEMS o|--o{ MAPPING_CONFIGS : source_mapping_for
+    INBOUND_DOCUMENTS ||--o| STANDARDIZED_INVOICES : produces
     STANDARDIZED_INVOICES ||--|{ INVOICE_LINE_ITEMS : contains
 
     DEALERS {
-        uuid id PK
+        bigint id PK
         varchar dealer_code UK
         varchar name
         varchar gstin
     }
-
     DMS_SYSTEMS {
-        uuid id PK
+        bigint id PK
         varchar name
         smallint integration_tier
         varchar integration_method
         varchar input_format
     }
-
     INBOUND_DOCUMENTS {
-        uuid id PK
-        uuid dealer_id FK
-        uuid dms_id FK
+        bigint id PK
+        bigint dealer_id FK
+        bigint dms_id FK
         varchar document_type
         text storage_key
+        jsonb raw_payload
         varchar status
-        timestamptz received_at
     }
-
+    MAPPING_CONFIGS {
+        bigint id PK
+        varchar mapping_direction
+        bigint dms_id FK
+        varchar target_system
+        jsonb mapping_config
+        integer version
+        boolean is_active
+    }
+    VALIDATION_RULES {
+        bigint id PK
+        varchar rule_code UK
+        jsonb rule_config
+        varchar severity
+        boolean is_active
+    }
     STANDARDIZED_INVOICES {
-        uuid id PK
-        uuid document_id FK,UK
+        bigint id PK
+        bigint document_id FK,UK
         varchar invoice_number
         date invoice_date
-        uuid supplier_dealer_id FK
         varchar buyer_oem_id
         numeric total_amount
         jsonb canonical_payload
@@ -237,161 +300,97 @@ erDiagram
         varchar review_status
         varchar oem_delivery_status
     }
-
     INVOICE_LINE_ITEMS {
-        uuid id PK
-        uuid invoice_id FK
+        bigint id PK
+        bigint invoice_id FK
         integer line_number
         varchar item_code
         numeric quantity
         numeric unit_price
-        numeric tax_amount
         numeric line_total
-        varchar vin
-    }
-
-    PROCESSING_RUNS {
-        uuid id PK
-        uuid document_id FK
-        integer attempt_number
-        varchar status
-        text error_message
+        varchar chassis_number
     }
 ```
 
-### Relationship summary
+`VALIDATION_RULES` applies by document type and active status; it intentionally has no foreign key to an invoice because rules are shared configuration. `MAPPING_CONFIGS` with `mapping_direction = 'CANONICAL_TO_OEM'` has a null `dms_id` and identifies its destination using `target_system`.
 
-- One dealer can submit many inbound documents.
-- One DMS system can originate many inbound documents.
-- Each inbound document belongs to one dealer and one source DMS.
-- One inbound document produces zero or one standardized invoice in the POC.
-- One standardized invoice contains one or more line items (once successfully parsed).
-- One inbound document can have multiple processing runs.
+## 6. Object storage
 
-## 6. Object storage design
+### What is stored where?
 
-### What belongs where?
-
-| Data | Store in |
+| Data | Location |
 |---|---|
-| Dealer records, invoice headers, line items, statuses | Neon PostgreSQL |
-| Original PDF invoices | Object storage |
-| Original uploaded CSV / XLSX / XML files | Object storage |
-| Raw API JSON | PostgreSQL JSONB or object storage, depending on audit/size needs |
-| Extracted canonical invoice fields | PostgreSQL |
-| Object key / provider / checksum / file metadata | `inbound_documents` in PostgreSQL |
-| Signed, expiring download URL | Generate on demand; do not treat as a permanent reference |
+| Dealer and DMS registry | Neon PostgreSQL |
+| Source-to-canonical and canonical-to-OEM maps | `mapping_configs` in Neon |
+| Validation configuration | `validation_rules` in Neon |
+| Invoice headers, lines and statuses | Neon PostgreSQL |
+| Original PDFs, CSVs, Excel and XML files | Private object storage |
+| Optional raw API JSON | `inbound_documents.raw_payload` (or object storage if justified) |
+| Object key/checksum and file metadata | `inbound_documents` in Neon |
+| Shared storage provider, endpoint and bucket | Backend environment configuration |
 
-### Bucket and object-key convention
-
-Use one **private** bucket for the POC, for example `onedms-invoices`. A simple key convention is:
+Use one private bucket for the POC, for example `onedms-invoices`. Example object keys:
 
 ```text
-onedms-invoices/
-  dealer-001/<document-uuid>.pdf
-  dealer-002/<document-uuid>.csv
-  dealer-002/<document-uuid>.xlsx
-  dealer-003/<document-uuid>.pdf
+onedms-invoices/dealer-001/<document-id>.pdf
+onedms-invoices/dealer-002/<document-id>.csv
+onedms-invoices/dealer-002/<document-id>.xlsx
+onedms-invoices/dealer-003/<document-id>.pdf
 ```
 
-Object stores typically treat these as object keys with slash-separated prefixes, not real directories. Do not create one bucket per dealer.
+These are object-key prefixes, not necessarily real directories. Do not create one bucket per dealer. Keep the shared Neon Object Storage provider, endpoint and bucket in backend configuration; store only the permanent object key on each document. Confirm Object Storage is available in the project before receiving files.
 
-### Object-storage flow
+### Secure file access flow
 
 ```mermaid
 flowchart TD
-    A["Invoice arrives"] --> B["Create document UUID"]
-    B --> C["Upload original file"]
-    C --> D[("Private Object Storage")]
-    D --> E["Get object key"]
-    E --> F[("Neon PostgreSQL: inbound_documents")]
-    F --> G["Worker reads object key"]
-    G --> H["Extract and normalize invoice"]
-    H --> I[("standardized_invoices + invoice_line_items")]
-    I --> J["OEM / Auditor Dashboard"]
-    J --> K["Backend checks access"]
-    K --> L["Generate signed URL or proxy file"]
-    L --> D
+    A["Receive invoice file"] --> B["Create RECEIVED document row and get integer ID"]
+    B --> C["Upload original to private object storage"]
+    C --> D["Receive object key"]
+    D --> E["Update metadata in inbound_documents"]
+    E --> F["Worker reads object using backend credentials"]
+    F --> G["Extract and normalize invoice"]
+    G --> H["Save invoice header and lines in Neon"]
+    H --> I["Auditor opens invoice in dashboard"]
+    I --> J["Backend authorizes access"]
+    J --> K["Short-lived signed URL or proxied download"]
+    K --> C
 ```
 
-**Reliability detail:** Uploads and database transactions cannot generally be committed atomically across both systems. Handle failures explicitly: if the upload succeeds but the DB write fails, delete the orphaned object where possible or run a cleanup job. If the DB record is created first and the upload fails, mark the document as failed and retry or clean up the record.
+Keep the bucket private. Do not persist expiring signed URLs as the file reference; generate one after checking the user's authorization. Handle partial failures: if upload succeeds but the database write fails, retry or clean up the orphaned object; if the database record is created but upload fails, mark the document failed and retry/clean it up.
 
-### Security
+## 7. Minimal indexes and constraints
 
-- Keep the bucket private.
-- Check the requesting user's authorization on the backend before granting file access.
-- Use short-lived signed URLs or proxy file downloads through the backend.
-- Do not store temporary signed URLs as permanent database values.
-- Avoid logging sensitive invoice data.
-- Retain originals according to the POC's agreed retention policy.
+- `UNIQUE (dealers.dealer_code)`.
+- Index `inbound_documents(dealer_id, received_at)` and `inbound_documents(status)`.
+- `UNIQUE (standardized_invoices.document_id)` for the one-document/one-invoice POC assumption.
+- Index `standardized_invoices(invoice_number, validation_status)`; use dealer/source context when checking for duplicates.
+- `UNIQUE (invoice_line_items.invoice_id, line_number)`.
+- `UNIQUE (mapping_configs.dms_id, document_type, version)` where appropriate for inbound maps; add a separate partial unique index to ensure only one active inbound map per DMS/document type.
+- Add a partial unique index to ensure only one active OEM output map per target system/document type.
+- `UNIQUE (validation_rules.rule_code)`.
 
-## 7. Example end-to-end invoice flow
+## 8. POC processing sequence
 
-1. Dealer A sends invoice JSON through an API; Dealer B uploads a PDF.
-2. OneDMS identifies the dealer and DMS, creates an `inbound_documents` record, and stores original files in object storage when applicable.
-3. A processing run is created in `processing_runs`.
-4. Tier 1 JSON is parsed directly; the PDF is extracted using OCR/LLM.
-5. Both inputs are mapped to the same canonical invoice fields.
-6. The invoice header is stored in `standardized_invoices`; its lines are stored in `invoice_line_items`.
-7. Validation checks required fields, amounts, currency, invoice references and applicable business rules.
-8. Valid invoices can be prepared for OEM delivery. Invalid or uncertain results are flagged for human review.
-9. The auditor dashboard shows normalized fields beside the original source file.
-10. The processing and delivery statuses are updated.
+1. Register two dealers and their source DMS profiles.
+2. Configure one active inbound mapping per DMS and one active canonical-to-OEM output mapping.
+3. Receive an API payload or uploaded invoice file; create an `inbound_documents` row and store file inputs in private object storage.
+4. Parse structured formats directly; use OCR/LLM extraction only for unstructured PDFs/email attachments.
+5. Apply the configured source mapping and produce the canonical invoice header and line items.
+6. Load active `validation_rules` and validate required fields, quantities, totals and duplicate candidates.
+7. Set validation/review status. Human review is required for uncertain or invalid results; do not silently accept uncertain LLM extraction.
+8. Apply the OEM output mapping and send/export the standardized invoice. Update `oem_delivery_status`.
+9. In the auditor dashboard, show normalized data beside the original invoice using authorized file access.
 
-## 8. POC validation rules
+## 9. Explicitly out of scope
 
-At minimum, validate:
+Do not add these tables for the current POC unless the demo requirements change:
 
-- Required invoice number, invoice date, supplier dealer and buyer OEM.
-- Supported currency and valid numeric values.
-- Quantity, price, discounts and tax values are within sensible bounds.
-- Invoice header totals reconcile with line totals and tax, subject to the source's documented calculation rules and rounding.
-- Dealer identity matches a registered dealer.
-- Duplicate submissions are flagged using source invoice identity and/or file checksum; a checksum alone should not automatically reject two legitimately distinct invoices.
-- Uncertain OCR/LLM fields are flagged for review instead of silently accepted.
+- Users, roles and permissions.
+- Separate processing-attempt history (use `inbound_documents.status` and `error_message` for the initial demo).
+- Orders, quotations, negotiation rounds or delivery lifecycle.
+- Separate tax master tables or product catalog.
+- Separate file table or bucket per file type.
+- A separate audit-event history table.
 
-LLM output is untrusted input. Validate its structure and values with deterministic code; do not let the model itself decide that an invoice is financially correct.
-
-## 9. Recommended indexes and constraints
-
-For this POC, add only useful indexes:
-
-- Unique index on `dealers(dealer_code)`.
-- Index on `inbound_documents(dealer_id, received_at)`.
-- Index on `inbound_documents(status)`.
-- Unique index on `standardized_invoices(document_id)` for the one-document/one-invoice assumption.
-- Index on `standardized_invoices(invoice_number, supplier_dealer_id)`.
-- Index on `standardized_invoices(validation_status, review_status)`.
-- Unique constraint on `invoice_line_items(invoice_id, line_number)`.
-- Unique constraint on `processing_runs(document_id, attempt_number)`.
-
-Do not use invoice number alone as a global unique key: different dealers may issue the same invoice number.
-
-## 10. What is intentionally excluded?
-
-To keep the POC easy to build, it does not yet include:
-
-- User/role/permission tables.
-- Separate audit-event history table.
-- Separate mapping-rules/configuration tables.
-- Separate tax-rule tables.
-- Orders, quotations and negotiation lifecycle.
-- Email mailbox synchronization state.
-- Multiple invoices inside one uploaded file.
-- Multi-OEM tenancy.
-
-Add these only if the demo requires them or the implementation reveals a concrete need.
-
-## 11. Suggested implementation order
-
-1. Create `dealers` and `dms_systems`, and insert two demo dealers using different DMS configurations.
-2. Create `inbound_documents` and set up private object storage.
-3. Build an API endpoint for JSON and a file-upload endpoint for PDF/CSV/XLSX/XML.
-4. Implement `processing_runs` and basic status transitions.
-5. Implement canonical invoice extraction and normalization.
-6. Persist invoice headers and line items.
-7. Add deterministic validation and a basic review screen.
-8. Show the original document next to the normalized invoice.
-9. Add a mocked OEM output adapter for the demo.
-
-**POC success criterion:** Two different source formats result in equivalent canonical invoice structures, with validation outcomes and a link back to each original source.
+**POC success criterion:** Two differently structured dealer invoices are converted into the same canonical invoice shape, checked against configurable rules, mapped to the OEM output shape, and traceable to their original input.
