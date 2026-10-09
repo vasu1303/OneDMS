@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Any
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -15,6 +16,19 @@ class Settings(BaseSettings):
     APP_NAME: str = "OneDMS"
     VERSION: str = "0.1.0"
     DEBUG: bool = True
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            val = v.strip().lower()
+            if val in ("true", "1", "yes", "on", "debug"):
+                return True
+            if val in ("false", "0", "no", "off", "release", ""):
+                return False
+        return bool(v)
     API_PREFIX: str = "/api"
     DATABASE_URL: SecretStr = SecretStr("")
     AWS_ENDPOINT_URL_S3: str = ""

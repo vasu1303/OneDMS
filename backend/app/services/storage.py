@@ -63,6 +63,20 @@ class ObjectStorage:
                 
         return stream_generator(), content_type
 
+    async def get_file_bytes(self, key: str) -> tuple[bytes, str]:
+        response = await asyncio.to_thread(
+            self.client.get_object,
+            Bucket=self.bucket,
+            Key=key,
+        )
+        body = response["Body"]
+        content_type = response.get("ContentType", "application/octet-stream")
+        try:
+            data = await asyncio.to_thread(body.read)
+            return data, content_type
+        finally:
+            body.close()
+
     async def delete_file(self, key: str) -> None:
         try:
             await asyncio.to_thread(

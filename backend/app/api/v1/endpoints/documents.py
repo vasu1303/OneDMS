@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps.db import get_db_session
 from app.api.deps.storage import get_storage
 from app.api.v1.schemas.documents import DocumentResponse, JsonSubmissionRequest
-from app.models.invoice import Dealer, DmsSystem, InboundDocument
+from app.models.invoice import Dealer, DmsSystem, InboundDocument, StandardizedInvoice
 from app.services.storage import ObjectStorage
 
 router = APIRouter()
@@ -198,3 +198,111 @@ async def get_document_source(
         media_type=content_type,
         headers={"Content-Disposition": f'inline; filename="{safe_filename}"'}
     )
+
+
+@router.get("")
+async def list_documents(
+    processing_status: str | None = None,
+    validation_status: str | None = None,
+    review_status: str | None = None,
+    dealer_code: str | None = None,
+    dealer_id: int | None = None,
+    q: str | None = None,
+    page: int = 1,
+    size: int = 20,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    List inbound documents with filtering for status, dealer, and text search.
+    Supports pagination and returns items envelope.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.services.workflow import serialize_document_for_frontend
+
+    query = (
+        select(InboundDocument)
+        .options(
+            selectinload(InboundDocument.dealer),
+            selectinload(InboundDocument.dms),
+            selectinload(InboundDocument.invoice).selectinload(StandardizedInvoice.line_items),
+        )
+        .order_by(InboundDocument.received_at.desc())
+    )
+
+    if dealer_id:
+        query = query.where(InboundDocument.dealer_id == dealer_id)
+
+    if processing_status and processing_status != "all":
+        status_map = {
+            "received": "RECEIVED",
+            "processing": "PROCESSING",
+            "processed": "COMPLETED",
+            "review_required": "REVIEW_REQUIRED",
+            "failed": "FAILED",
+        }
+        db_stat = status_map.get(processing_status.lower(), processing_status.upper())
+        query = query.where(InboundDocument.status == db_stat)
+
+    if dealer_code:
+        query = query.join(InboundDocument.dealer).where(Dealer.dealer_code.ilike(f"%{dealer_code}%"))
+
+    if q:
+        query = query.where(InboundDocument.original_file_name.ilike(f"%{q}%"))
+
+    # Pagination
+    offset = max(0, (page - 1) * size)
+    query = query.offset(offset).limit(size)
+
+    docs = (await db.execute(query)).scalars().all()
+    items = [serialize_document_for_frontend(d) for d in docs]
+
+    return {"items": items, "total": len(items), "page": page, "size": size}
+
+
+@router.get("/{document_id}")
+async def get_document_detail(
+    document_id: int,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Retrieve single document detail with associated dealer, dms, and invoice info.
+    """
+    from sqlalchemy.orm import selectinload
+    from app.services.workflow import serialize_document_for_frontend
+
+    stmt = (
+        select(InboundDocument)
+        .options(
+            selectinload(InboundDocument.dealer),
+            selectinload(InboundDocument.dms),
+            selectinload(InboundDocument.invoice).selectinload(StandardizedInvoice.line_items),
+        )
+        .where(InboundDocument.id == document_id)
+    )
+    doc = (await db.execute(stmt)).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    return serialize_document_for_frontend(doc)
+
+
+@router.post("/{document_id}/process")
+async def process_document_workflow(
+    document_id: int,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage = Depends(get_storage),
+):
+    """
+    Orchestrate extraction, mapping, validation, and persistence for an inbound document.
+    Idempotent: prevents duplicate invoices and updates statuses consistently.
+    """
+    from app.services.workflow import WorkflowService
+
+    return await WorkflowService.process_document(
+        session=db,
+        document_id=document_id,
+        storage=storage,
+        force=force,
+    )
+
