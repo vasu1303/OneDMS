@@ -1,64 +1,124 @@
-/** Canonical transaction statuses across all DMS systems */
-export type TransactionStatus =
-  | 'pending'
-  | 'quoted'
-  | 'negotiating'
-  | 'accepted'
-  | 'invoiced'
-  | 'completed'
-  | 'rejected';
+// Provisional frontend DTOs, not backend-confirmed. See frontend README
+// for endpoint ownership, integer/decimal transport, and editable fields.
+export type Id = number;
 
-/** Dealer tiers based on integration capability */
-export type DealerTier = 'api' | 'sftp' | 'upload';
+export type SourceType = 'json' | 'xml' | 'csv' | 'excel' | 'pdf' | 'flatfile';
 
-/** Supported DMS data source formats */
-export type SourceFormat = 'json' | 'xml' | 'csv' | 'excel' | 'pdf' | 'flatfile';
+export type ProcessingStatus =
+  | 'received'
+  | 'processing'
+  | 'processed'
+  | 'failed'
+  | 'review_required';
 
-/** Core dealer entity */
-export interface Dealer {
-  id: string;
-  name: string;
-  dmsName: string;
-  tier: DealerTier;
-  sourceFormat: SourceFormat;
-  isActive: boolean;
-  createdAt: string;
+export type ValidationStatus = 'pending' | 'valid' | 'invalid' | 'warning';
+
+export type ReviewStatus = 'pending' | 'in_review' | 'approved' | 'rejected';
+
+export type DeliveryStatus = 'pending' | 'ready' | 'delivered' | 'failed';
+
+export type FindingSeverity = 'error' | 'warning' | 'info';
+
+export interface QueueFilters {
+  processing_status?: ProcessingStatus | 'all';
+  validation_status?: ValidationStatus | 'all';
+  review_status?: ReviewStatus | 'all';
+  dealer_code?: string;
+  q?: string;
 }
 
-/** Canonical transaction record */
-export interface Transaction {
-  id: string;
-  dealerId: string;
-  type: 'order' | 'quote' | 'invoice';
-  status: TransactionStatus;
-  rawData: Record<string, unknown>;
-  canonicalData: Record<string, unknown>;
-  confidenceScore: number;
-  createdAt: string;
-  updatedAt: string;
+export interface DocumentQueueItem {
+  id: Id;
+  dealer_code: string;
+  dealer_name?: string | null;
+  dms_name?: string | null;
+  source_type: SourceType;
+  source_filename?: string | null;
+  received_at: string;
+  processing_status: ProcessingStatus;
+  validation_status: ValidationStatus;
+  review_status: ReviewStatus;
+  summary?: string | null;
+  has_findings?: boolean;
+  findings_count?: number;
+  invoice_id?: Id | null;
 }
 
-/** Exception queue item for human review */
-export interface ExceptionItem {
-  id: string;
-  transactionId: string;
-  reason: string;
-  confidenceScore: number;
-  status: 'pending' | 'approved' | 'rejected';
-  reviewedBy?: string;
-  createdAt: string;
+export interface DocumentDetail extends DocumentQueueItem {
+  source_content_type?: string | null;
+  source_size_bytes?: number | null;
+  checksum_sha256?: string | null;
+  last_error?: string | null;
 }
 
-/** API response wrapper */
-export interface ApiResponse<T> {
-  data: T;
+export interface ValidationFinding {
+  id?: Id;
+  severity: FindingSeverity;
+  field?: string | null;
+  line_number?: number | null;
   message: string;
-  success: boolean;
+  confidence?: number | null;
+  extracted_value?: string | number | null;
+  approved_value?: string | number | null;
 }
 
-/** Paginated response */
-export interface PaginatedResponse<T> extends ApiResponse<T[]> {
-  total: number;
-  page: number;
-  pageSize: number;
+export interface InvoiceLineItem {
+  id?: Id;
+  line_number: number;
+  part_number?: string | null;
+  description?: string | null;
+  quantity: number;
+  unit_price: number;
+  discount_amount: number;
+  tax_amount: number;
+  line_total: number;
+  vin?: string | null;
+}
+
+export interface InvoiceHeader {
+  invoice_number: string;
+  invoice_date?: string | null;
+  dealer_invoice_ref?: string | null;
+  currency_code: string;
+  subtotal_amount: number;
+  discount_amount: number;
+  tax_amount: number;
+  total_amount: number;
+}
+
+export interface InvoiceDetail {
+  id: Id;
+  document_id: Id;
+  buyer_oem_id?: string | null;
+  processing_status: ProcessingStatus;
+  validation_status: ValidationStatus;
+  review_status: ReviewStatus;
+  delivery_status?: DeliveryStatus;
+  header: InvoiceHeader;
+  line_items: InvoiceLineItem[];
+  findings: ValidationFinding[];
+  updated_at?: string | null;
+}
+
+export interface DocumentUploadPayload {
+  dealer_id: string;
+  dms_system_id: string;
+  source_type: SourceType;
+  file: File;
+}
+
+export interface JsonDocumentSubmission {
+  dealer_id: string;
+  dms_system_id: string;
+  payload: Record<string, unknown>;
+}
+
+export interface InvoicePatchPayload {
+  header?: Partial<InvoiceHeader>;
+  line_items?: Array<Partial<InvoiceLineItem> & { id?: Id; line_number: number }>;
+}
+
+export interface InvoiceReviewPayload {
+  decision: 'approve' | 'reject';
+  comment?: string;
 }
