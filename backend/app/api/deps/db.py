@@ -10,3 +10,6 @@ async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
         raise HTTPException(status_code=503, detail="Database is not configured")
     async with factory() as session:
         yield session
+
+
+get_db = get_db_session

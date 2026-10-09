@@ -1,0 +1,54 @@
+{
+  "invoice_number": "DEMO-DLR001-2026-0042",
+  "invoice_date": "2026-10-09",
+  "supplier": {
+    "dealer_code": "DLR-001",
+    "name": "Northstar Commercial Vehicles Pvt. Ltd. (Demo)",
+    "gstin": "07AABCN1234F1Z5",
+    "address": "Plot 18, Industrial Area, Gurugram, Haryana, India"
+  },
+  "buyer": {
+    "oem_id": "OEM-DAIMLER-DEMO",
+    "name": "Daimler Truck (Demo OEM)",
+    "address": "OEM Receiving Department, India"
+  },
+  "purchase_order_number": "PO-DEMO-78421",
+  "currency": "INR",
+  "invoice_type": "WARRANTY_REIMBURSEMENT",
+  "chassis_number": "DEMO9X2A6R1000042",
+  "notes": "Synthetic OneDMS POC sample. Not a valid tax invoice or payment demand.",
+  "line_items": [
+    {
+      "line_number": 1,
+      "item_code": "LAB-WTY-001",
+      "description": "Warranty diagnostic and repair labor",
+      "quantity": 4,
+      "unit_of_measure": "HOUR",
+      "unit_price": 1500.0,
+      "discount_amount": 0.0,
+      "taxable_amount": 6000.0,
+      "tax_rate": 18.0,
+      "tax_amount": 1080.0,
+      "line_total": 7080.0,
+      "chassis_number": "DEMO9X2A6R1000042"
+    },
+    {
+      "line_number": 2,
+      "item_code": "PART-EGT-118",
+      "description": "Exhaust gas temperature sensor",
+      "quantity": 1,
+      "unit_of_measure": "EA",
+      "unit_price": 8500.0,
+      "discount_amount": 0.0,
+      "taxable_amount": 8500.0,
+      "tax_rate": 18.0,
+      "tax_amount": 1530.0,
+      "line_total": 10030.0,
+      "chassis_number": "DEMO9X2A6R1000042"
+    }
+  ],
+  "subtotal": 14500.0,
+  "tax_amount": 2610.0,
+  "total_amount": 17110.0,
+  "created_by_system": "OneDMS demo generator"
+}

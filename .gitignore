@@ -46,3 +46,6 @@ htmlcov/
 *.bak
 *.tmp
 .cache/
+
+
+/team_tasks
