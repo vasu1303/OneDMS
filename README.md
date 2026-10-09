@@ -41,8 +41,6 @@ DMS Sources (API / SFTP / Upload)
 | Backend     | FastAPI + Uvicorn + SQLAlchemy    |
 | Database    | Neon PostgreSQL + psycopg 3       |
 | Files       | Neon Object Storage + boto3       |
-| Pipeline    | Databricks + PySpark              |
-| AI/Agentic  | LLM extraction + mapping          |
 
 ## Implementation Status
 
@@ -54,8 +52,7 @@ Credentials and storage access stay in the backend, never in the browser.
 
 The seven invoice tables described in [the database design](docs/architecture/OneDMS_Database_Design.md)
 are implemented with SQLAlchemy models and an explicit schema setup command. An idempotent seed
-script supplies synthetic demo data. Ingestion connectors, AI extraction,
-validation workflows, and Databricks/PySpark jobs remain planned. Startup does not
+script supplies synthetic demo data. Ingestion connectors remain planned. Startup does not
 create tables, buckets, or files. There is no upload API or
 authentication implementation yet.
 
@@ -276,8 +273,6 @@ npm run build
 OneDMS/
 ├── frontend/       # React + Vite + TypeScript
 ├── backend/        # FastAPI + Uvicorn
-├── pipeline/       # Databricks / PySpark ETL
-├── ai/             # AI extraction, mapping, validation
 ├── shared/         # Canonical schema, constants, enums
 └── docs/           # Architecture, API docs, runbooks
 ```
