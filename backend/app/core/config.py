@@ -25,4 +25,15 @@ class Settings(BaseSettings):
     DEPENDENCY_TIMEOUT_SECONDS: float = Field(default=10, ge=1, le=60)
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
+    # OpenRouter AI Configuration
+    OPENROUTER_API_KEY: SecretStr = SecretStr("")
+    OPEN_ROUTER_KEY: SecretStr = SecretStr("")
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    OPENROUTER_FALLBACK_MODEL: str = "openrouter/free"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+
+    @property
+    def openrouter_key(self) -> str:
+        return self.OPENROUTER_API_KEY.get_secret_value() or self.OPEN_ROUTER_KEY.get_secret_value()
+
 settings = Settings()
