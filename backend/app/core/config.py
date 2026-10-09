@@ -1,15 +1,28 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
+
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     APP_NAME: str = "OneDMS"
     VERSION: str = "0.1.0"
     DEBUG: bool = True
-    API_V1_PREFIX: str = "/api/v1"
-    DATABASE_URL: str = "sqlite+aiosqlite:///./onedms.db"
+    API_PREFIX: str = "/api"
+    DATABASE_URL: SecretStr = SecretStr("")
+    AWS_ENDPOINT_URL_S3: str = ""
+    AWS_REGION: str = "ap-southeast-1"
+    AWS_ACCESS_KEY_ID: SecretStr = SecretStr("")
+    AWS_SECRET_ACCESS_KEY: SecretStr = SecretStr("")
+    S3_BUCKET_NAME: str = "assets"
+    DEPENDENCY_TIMEOUT_SECONDS: float = Field(default=10, ge=1, le=60)
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 settings = Settings()

@@ -37,6 +37,7 @@ logs/
 *.sqlite3
 
 # ── Coverage ──
+.pytest_cache/
 coverage/
 htmlcov/
 .coverage
