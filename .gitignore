@@ -1,0 +1,47 @@
+# ── Dependencies ──
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Environment ──
+.env
+.env.local
+.env.*.local
+
+# ── Build outputs ──
+dist/
+build/
+*.egg-info/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Database ──
+*.db
+*.sqlite3
+
+# ── Coverage ──
+coverage/
+htmlcov/
+.coverage
+
+# ── Misc ──
+*.bak
+*.tmp
+.cache/
