@@ -233,7 +233,7 @@ export const mockUploadDocument = async (
     id,
     dealer_code: payload.dealer_id,
     dealer_name: payload.dealer_id,
-    dms_name: payload.dms_system_id,
+    dms_name: payload.dms_id,
     source_type: payload.source_type,
     source_filename: payload.file.name,
     received_at: new Date().toISOString(),
@@ -257,7 +257,7 @@ export const mockUploadDocument = async (
 
 export const mockUploadJson = async (payload: {
   dealer_id: string;
-  dms_system_id: string;
+  dms_id: string;
   payload: Record<string, unknown>;
 }): Promise<DocumentDetail> => {
   await delay(500);
@@ -267,7 +267,7 @@ export const mockUploadJson = async (payload: {
     id,
     dealer_code: payload.dealer_id,
     dealer_name: payload.dealer_id,
-    dms_name: payload.dms_system_id,
+    dms_name: payload.dms_id,
     source_type: 'json',
     source_filename: `submission-${id}.json`,
     received_at: new Date().toISOString(),

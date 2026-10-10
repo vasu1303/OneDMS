@@ -14,7 +14,7 @@ function App() {
         <div className="brand">
           <div>
             <strong>OneDMS</strong>
-            <p>OEM invoice inspection</p>
+            <p>Invoice review workspace</p>
           </div>
         </div>
 
@@ -24,15 +24,17 @@ function App() {
             className={({ isActive }) => (isActive ? 'nav-link nav-link--active' : 'nav-link')}
             end
           >
-            Queue
+            Invoice queue
           </NavLink>
           <NavLink
             to="/documents/new"
             className={({ isActive }) => (isActive ? 'nav-link nav-link--active' : 'nav-link')}
           >
-            Intake upload
+            Invoice intake
           </NavLink>
         </nav>
+
+        <div className="nav-footer"><strong>Invoice operations</strong><p>Upload, review, approve, and download.</p></div>
 
         {mockMode ? (
           <p className="mock-banner" role="status">
@@ -42,6 +44,7 @@ function App() {
       </aside>
 
       <main className="shell__main" id="workspace" tabIndex={-1}>
+        <header className="workspace-band"><div><strong>Invoice operations</strong><span>Dealer invoices in one standard format</span></div><span className={`workspace-state${mockMode ? '' : ' workspace-state--live'}`}>{mockMode ? 'Development fixtures' : 'Live API mode'}</span></header>
         <Routes>
           <Route path="/" element={<Navigate to="/documents" replace />} />
           <Route path="/documents" element={<DocumentQueuePage />} />

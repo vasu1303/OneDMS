@@ -1,5 +1,11 @@
+import asyncio
+import sys
 from fastapi import FastAPI
 from contextlib import AsyncExitStack, asynccontextmanager
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from app.core.config import settings
 from app.core.database import create_database, create_session_factory
 from app.core.logging import log

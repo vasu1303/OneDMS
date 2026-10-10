@@ -1,5 +1,7 @@
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import SourcePreview from '@/components/common/SourcePreview';
+import ApprovedInvoiceDownload from '@/components/common/ApprovedInvoiceDownload';
+import IntakeSummary from '@/components/common/IntakeSummary';
 import { useDocumentDetail, useProcessDocument } from '@/hooks/useInvoiceWorkflow';
 import { formatDateTime, parseRouteId, statusLabel } from '@/utils/format';
 
@@ -40,6 +42,7 @@ function DocumentDetailPage() {
 
       {detailQuery.data ? (
         <div className="stack">
+          <IntakeSummary dealer={detailQuery.data.dealer_name || detailQuery.data.dealer_code || 'Not supplied'} dms={detailQuery.data.dms_name || 'Not supplied'} format={detailQuery.data.source_type.toUpperCase()} mapping={`Review: ${statusLabel(detailQuery.data.review_status)}`} />
           <div className="panel stack">
             <h2>#{detailQuery.data.id}</h2>
             <p className="muted">
@@ -71,7 +74,7 @@ function DocumentDetailPage() {
                   to={`/invoices/${detailQuery.data.invoice_id}`}
                   className="button button--primary"
                 >
-                  Open invoice review
+                  {detailQuery.data.review_status === 'approved' ? 'View approved invoice' : 'Open invoice review'}
                 </Link>
               ) : (
                 <button
@@ -86,6 +89,7 @@ function DocumentDetailPage() {
             </div>
             {processMutation.isError && <p className="panel panel--error" role="alert">Processing request failed: {processMutation.error.message}</p>}
             {processMutation.isSuccess && !processMutation.data.invoice_id && <p role="status">Processing request accepted. Waiting for the document workflow to report a result.</p>}
+            {detailQuery.data.invoice_id && <ApprovedInvoiceDownload invoiceId={detailQuery.data.invoice_id} approved={detailQuery.data.review_status === 'approved'} />}
           </div>
           <SourcePreview documentId={detailQuery.data.id} />
         </div>

@@ -1,6 +1,11 @@
 import axios from 'axios';
 import type { AxiosProgressEvent } from 'axios';
 import type {
+  CreateDmsPayload,
+  DealerRegistryEntry,
+  DmsRegistryEntry,
+  MappingPreviewPayload,
+  MappingPreviewResult,
   DocumentDetail,
   DocumentQueueItem,
   DocumentUploadPayload,
@@ -52,9 +57,17 @@ api.interceptors.response.use(
     }
     const data = body && typeof body === 'object' ? body as Record<string, unknown> : {};
     const detail = data.detail ?? data.message;
+    const describe = (entry: unknown): string => {
+      if (!entry || typeof entry !== 'object') return '';
+      const finding = entry as Record<string, unknown>;
+      const text = typeof finding.message === 'string' ? finding.message : typeof finding.msg === 'string' ? finding.msg : '';
+      const field = typeof finding.field === 'string' ? finding.field : Array.isArray(finding.loc) ? finding.loc.join('.') : '';
+      return text ? `${field ? `${field}: ` : ''}${text}` : '';
+    };
+    const nested = detail && typeof detail === 'object' && !Array.isArray(detail) ? detail as Record<string, unknown> : {};
     const message = typeof detail === 'string' ? detail : Array.isArray(detail)
-      ? detail.map((entry) => typeof entry?.msg === 'string' ? entry.msg : '').filter(Boolean).join('; ')
-      : undefined;
+      ? detail.map(describe).filter(Boolean).join('; ')
+      : [typeof nested.message === 'string' ? nested.message : '', ...(Array.isArray(nested.errors) ? nested.errors.map(describe) : [])].filter(Boolean).join('; ');
     return Promise.reject(new Error(message || (error.response
       ? `API request failed (${error.response.status}). Retry or contact the workflow API owner.`
       : 'Cannot reach the workflow API. Check the connection and retry.')));
@@ -282,6 +295,19 @@ export const getDocument = async (documentId: Id): Promise<DocumentDetail> => {
   return normalizeDocumentDetail(response.data);
 };
 
+// Intake returns DocumentResponse, not the full document detail DTO.
+const loadAcceptedDocument = async (payload: unknown): Promise<DocumentDetail> => {
+  const acknowledgement = (payload ?? {}) as Record<string, unknown>;
+  const documentId = asId(acknowledgement.id);
+  try {
+    return await getDocument(documentId);
+  } catch {
+    throw new Error(
+      `Document #${documentId} was accepted, but its details could not be loaded. Open the queue; do not submit it again.`,
+    );
+  }
+};
+
 export const uploadDocument = async (
   payload: DocumentUploadPayload,
   onProgress?: (progress: number) => void,
@@ -292,7 +318,7 @@ export const uploadDocument = async (
 
   const formData = new FormData();
   formData.append('dealer_id', payload.dealer_id);
-  formData.append('dms_system_id', payload.dms_system_id);
+  formData.append('dms_id', payload.dms_id);
   formData.append('source_type', payload.source_type);
   formData.append('file', payload.file);
 
@@ -306,12 +332,12 @@ export const uploadDocument = async (
     },
   });
 
-  return normalizeDocumentDetail(response.data);
+  return loadAcceptedDocument(response.data);
 };
 
 export const uploadDocumentJson = async (payload: {
   dealer_id: string;
-  dms_system_id: string;
+  dms_id: string;
   payload: Record<string, unknown>;
 }): Promise<DocumentDetail> => {
   if (USE_DEV_MOCK_API) {
@@ -319,7 +345,7 @@ export const uploadDocumentJson = async (payload: {
   }
 
   const response = await api.post('/documents/json', payload);
-  return normalizeDocumentDetail(response.data);
+  return loadAcceptedDocument(response.data);
 };
 
 export const processDocument = async (documentId: Id): Promise<DocumentDetail> => {
@@ -371,6 +397,41 @@ export const reviewInvoice = async (
 
   const response = await api.post(`/invoices/${invoiceId}/review`, payload);
   return normalizeInvoice(response.data);
+};
+
+const requireLiveRegistry = () => {
+  if (USE_DEV_MOCK_API) throw new Error('DMS registry and mapping preview are unavailable in development fixture mode. Disable mock mode to use the real registry.');
+};
+
+export const getDealers = async (): Promise<DealerRegistryEntry[]> => {
+  requireLiveRegistry();
+  const response = await api.get<DealerRegistryEntry[]>('/dealers');
+  return response.data;
+};
+
+export const getDmsSystems = async (): Promise<DmsRegistryEntry[]> => {
+  requireLiveRegistry();
+  const response = await api.get<DmsRegistryEntry[]>('/dms-systems');
+  return response.data;
+};
+
+export const createDmsSystem = async (payload: CreateDmsPayload): Promise<DmsRegistryEntry> => {
+  requireLiveRegistry();
+  const response = await api.post<DmsRegistryEntry>('/dms-systems', payload);
+  return response.data;
+};
+
+export const previewDmsMapping = async (payload: MappingPreviewPayload): Promise<MappingPreviewResult> => {
+  requireLiveRegistry();
+  const response = await api.post<MappingPreviewResult>('/dms-systems/preview', payload);
+  return response.data;
+};
+
+export const getApprovedInvoicePdf = async (invoiceId: Id): Promise<Blob> => {
+  asId(invoiceId);
+  if (USE_DEV_MOCK_API) throw new Error('Final invoice PDF download is unavailable in development fixture mode. No PDF is generated for a mock record.');
+  const response = await api.get<Blob>(`/invoices/${invoiceId}/pdf`, { responseType: 'blob' });
+  return response.data;
 };
 
 export default api;
