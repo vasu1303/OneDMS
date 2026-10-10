@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps.db import get_db_session
 from app.api.v1.schemas.registry import (
-    DealerResponse, DmsSystemCreate, DmsSystemResponse,
+    DealerResponse, DmsSystemBatchCreate, DmsSystemBatchResponse,
+    DmsSystemCreate, DmsSystemResponse,
     MappingPreviewRequest, MappingPreviewResponse,
 )
 from app.services import registry
@@ -25,6 +26,14 @@ async def list_dms_systems(db: AsyncSession = Depends(get_db_session)):
 @router.post("/dms-systems", response_model=DmsSystemResponse, status_code=status.HTTP_201_CREATED)
 async def create_dms_system(request: DmsSystemCreate, db: AsyncSession = Depends(get_db_session)):
     return await registry.create_dms_system(db, request)
+
+
+@router.post("/dms-systems/batch", response_model=DmsSystemBatchResponse, status_code=status.HTTP_201_CREATED)
+async def create_dms_system_batch(
+    request: DmsSystemBatchCreate,
+    db: AsyncSession = Depends(get_db_session),
+):
+    return await registry.create_dms_system_batch(db, request)
 
 
 @router.post("/dms-systems/preview", response_model=MappingPreviewResponse)

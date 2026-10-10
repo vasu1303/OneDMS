@@ -57,13 +57,27 @@ class DmsSystemCreate(RegistryModel):
         validation_alias=AliasChoices("tier", "integration_tier"),
     )
     integration_method: Literal["API", "UPLOAD"]
-    input_format: Literal["JSON", "CSV", "PDF"]
+    input_format: Literal["JSON", "CSV", "EXCEL", "PDF"]
     mapping_config: SourceMapping | None = None
 
     @model_validator(mode="after")
     def require_structured_mapping(self) -> "DmsSystemCreate":
         if self.input_format != "PDF" and self.mapping_config is None:
-            raise ValueError("mapping_config is required for JSON and CSV")
+            raise ValueError("mapping_config is required for structured formats")
+        return self
+
+
+class DmsSystemBatchCreate(RegistryModel):
+    profiles: Annotated[list[DmsSystemCreate], Field(min_length=1, max_length=4)]
+
+    @model_validator(mode="after")
+    def validate_profiles(self) -> "DmsSystemBatchCreate":
+        names = {profile.name for profile in self.profiles}
+        formats = [profile.input_format for profile in self.profiles]
+        if len(names) != 1:
+            raise ValueError("All profiles in a batch must use the same DMS name")
+        if len(formats) != len(set(formats)):
+            raise ValueError("A DMS batch can include each input format only once")
         return self
 
 
@@ -83,6 +97,10 @@ class DmsSystemResponse(BaseModel):
     input_format: str
     active_mapping_version: int | None
     active_mapping_config: dict[str, Any] | None
+
+
+class DmsSystemBatchResponse(BaseModel):
+    profiles: list[DmsSystemResponse]
 
 
 class MappingPreviewRequest(RegistryModel):

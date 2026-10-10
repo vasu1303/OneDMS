@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps.db import get_db_session
 from app.api.deps.storage import get_storage
 from app.api.v1.schemas.documents import DocumentResponse, JsonSubmissionRequest
+from app.extraction.models import DocumentFormat
+from app.extraction.service import extraction_service
 from app.models.invoice import Dealer, DmsSystem, InboundDocument, StandardizedInvoice
 from app.services.storage import ObjectStorage
 
@@ -19,10 +21,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-ALLOWED_MIME_TYPES = {
-    "application/pdf": ".pdf",
-    "text/csv": ".csv",
-    "application/json": ".json",
+FILE_FORMATS = {
+    DocumentFormat.PDF: (".pdf", "application/pdf"),
+    DocumentFormat.CSV: (".csv", "text/csv"),
+    DocumentFormat.JSON: (".json", "application/json"),
+    DocumentFormat.EXCEL: (".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
 }
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -36,12 +39,6 @@ async def upload_document(
     """
     Upload a document (PDF, CSV, JSON).
     """
-    if file.content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f"Unsupported file type: {file.content_type}. Allowed types: PDF, CSV, JSON."
-        )
-
     # Validate Dealer and DMS existence
     dealer = await db.get(Dealer, dealer_id)
     if not dealer:
@@ -59,17 +56,35 @@ async def upload_document(
             detail="File size exceeds the 10MB limit."
         )
 
+    document_format = extraction_service.detect_format(
+        content,
+        filename=file.filename,
+        content_type=file.content_type,
+    )
+    if document_format not in FILE_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported file type. Upload a PDF, CSV, JSON, XLS, or XLSX file.",
+        )
+    if dms.input_format != document_format.value.upper():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Uploaded {document_format.value.upper()} file does not match the selected {dms.input_format} DMS profile.",
+        )
+
     # Generate checksum
     checksum = hashlib.sha256(content).hexdigest()
 
     # Generate unique storage key to avoid overwriting
-    ext = ALLOWED_MIME_TYPES[file.content_type]
+    ext, normalized_mime_type = FILE_FORMATS[document_format]
+    if document_format == DocumentFormat.EXCEL and file.filename and file.filename.lower().endswith(".xls"):
+        ext, normalized_mime_type = ".xls", "application/vnd.ms-excel"
     file_id = str(uuid.uuid4())
     storage_key = f"inbound/{dealer_id}/{dms_id}/{file_id}{ext}"
 
     # Try uploading to storage first
     try:
-        await storage.upload_file(storage_key, content, file.content_type)
+        await storage.upload_file(storage_key, content, normalized_mime_type)
     except Exception as e:
         logger.error(f"Storage upload failed for key {storage_key}: {e}")
         raise HTTPException(
@@ -82,7 +97,7 @@ async def upload_document(
         dealer_id=dealer_id,
         dms_id=dms_id,
         original_file_name=file.filename,
-        mime_type=file.content_type,
+        mime_type=normalized_mime_type,
         file_size_bytes=len(content),
         storage_key=storage_key,
         checksum_sha256=checksum,
@@ -121,6 +136,11 @@ async def submit_json_document(
     dms = await db.get(DmsSystem, request.dms_id)
     if not dms:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DMS System not found.")
+    if dms.input_format != "JSON":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="JSON payload submission requires a JSON DMS profile.",
+        )
 
     content = json.dumps(request.payload).encode("utf-8")
     checksum = hashlib.sha256(content).hexdigest()

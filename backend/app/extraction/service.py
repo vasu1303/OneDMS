@@ -13,6 +13,7 @@ from app.extraction.models import (
     ExtractionResult,
 )
 from app.extraction.parsers.csv_parser import CsvExtractor
+from app.extraction.parsers.excel_parser import ExcelExtractor
 from app.extraction.parsers.json_parser import JsonExtractor
 from app.extraction.parsers.pdf_parser import LocalPdfExtractor
 
@@ -30,6 +31,7 @@ class ExtractionService:
             self._extractors = {
                 DocumentFormat.JSON: JsonExtractor(),
                 DocumentFormat.CSV: CsvExtractor(),
+                DocumentFormat.EXCEL: ExcelExtractor(),
                 DocumentFormat.PDF: LocalPdfExtractor(),
             }
 
@@ -49,6 +51,8 @@ class ExtractionService:
                 return DocumentFormat.JSON
             if "csv" in ct or "text/comma-separated-values" in ct:
                 return DocumentFormat.CSV
+            if "spreadsheetml" in ct or "ms-excel" in ct or "excel" in ct:
+                return DocumentFormat.EXCEL
             if "pdf" in ct:
                 return DocumentFormat.PDF
 
@@ -59,6 +63,8 @@ class ExtractionService:
                 return DocumentFormat.JSON
             if fn.endswith((".csv", ".tsv", ".txt")):
                 return DocumentFormat.CSV
+            if fn.endswith((".xlsx", ".xls")):
+                return DocumentFormat.EXCEL
             if fn.endswith(".pdf"):
                 return DocumentFormat.PDF
 
@@ -66,6 +72,8 @@ class ExtractionService:
         if isinstance(content, bytes):
             if content.startswith(b"%PDF-"):
                 return DocumentFormat.PDF
+            if content.startswith((b"PK\x03\x04", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")):
+                return DocumentFormat.EXCEL
             stripped_bytes = content.lstrip()
             if stripped_bytes.startswith((b"{", b"[")):
                 return DocumentFormat.JSON

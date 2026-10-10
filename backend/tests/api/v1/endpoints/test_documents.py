@@ -12,18 +12,19 @@ from app.models.invoice import Dealer, DmsSystem, InboundDocument
 
 # Test data
 mock_dealer = Dealer(id=1, dealer_code="D1", name="Test Dealer")
-mock_dms = DmsSystem(id=1, name="Test DMS", integration_tier=1, input_format="CSV")
 
 @pytest.fixture
 def mock_db():
     db = AsyncMock()
     db.add = MagicMock()
+    dms = DmsSystem(id=1, name="Test DMS", integration_tier=1, input_format="CSV")
+    db.dms = dms
     # Mock db.get for Dealer, DmsSystem, InboundDocument
     async def mock_get(model, id):
         if model == Dealer and id == 1:
             return mock_dealer
         if model == DmsSystem and id == 1:
-            return mock_dms
+            return dms
         if model == InboundDocument and id == 1:
             return InboundDocument(
                 id=1, dealer_id=1, dms_id=1, original_file_name="test.pdf",
@@ -66,6 +67,7 @@ def client(mock_db, mock_storage):
     app.dependency_overrides.clear()
 
 def test_upload_document_success(client, mock_db, mock_storage):
+    mock_db.dms.input_format = "PDF"
     file_content = b"pdf content"
     files = {"file": ("test.pdf", io.BytesIO(file_content), "application/pdf")}
     data = {"dealer_id": "1", "dms_id": "1"}
@@ -87,13 +89,52 @@ def test_upload_document_success(client, mock_db, mock_storage):
 
 def test_upload_document_invalid_type(client):
     file_content = b"text content"
-    files = {"file": ("test.txt", io.BytesIO(file_content), "text/plain")}
+    files = {"file": ("test.docx", io.BytesIO(file_content), "text/plain")}
     data = {"dealer_id": "1", "dms_id": "1"}
     
     response = client.post("/api/documents", data=data, files=files)
     assert response.status_code == 415
 
+def test_upload_excel_preserves_xls_metadata(client, mock_db, mock_storage):
+    xls_signature = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1workbook"
+    mock_db.dms.input_format = "EXCEL"
+    async def mock_refresh(obj):
+        obj.id = 3
+        obj.received_at = "2026-10-09T00:00:00Z"
+    mock_db.refresh.side_effect = mock_refresh
+
+    response = client.post(
+        "/api/documents",
+        data={"dealer_id": "1", "dms_id": "1"},
+        files={"file": ("invoice.xls", io.BytesIO(xls_signature), "application/vnd.ms-excel")},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["mime_type"] == "application/vnd.ms-excel"
+    upload_args = mock_storage.upload_file.call_args.args
+    assert upload_args[0].endswith(".xls")
+    assert upload_args[2] == "application/vnd.ms-excel"
+
+def test_upload_rejects_file_that_does_not_match_profile(client, mock_storage):
+    files = {
+        "file": (
+            "invoice.xlsx",
+            io.BytesIO(b"PK\x03\x04workbook"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+
+    response = client.post(
+        "/api/documents",
+        data={"dealer_id": "1", "dms_id": "1"},
+        files=files,
+    )
+
+    assert response.status_code == 422
+    mock_storage.upload_file.assert_not_called()
+
 def test_submit_json_document_success(client, mock_db):
+    mock_db.dms.input_format = "JSON"
     data = {
         "dealer_id": 1,
         "dms_id": 1,

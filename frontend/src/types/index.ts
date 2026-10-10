@@ -2,7 +2,7 @@
 // for endpoint ownership, integer/decimal transport, and editable fields.
 export type Id = number;
 
-export type InputFormat = 'JSON' | 'CSV' | 'PDF';
+export type InputFormat = 'JSON' | 'CSV' | 'EXCEL' | 'PDF';
 export interface DealerRegistryEntry {
   id: Id;
   dealer_code: string;
@@ -37,7 +37,7 @@ export interface DmsRegistryEntry {
   name: string;
   integration_tier: number;
   integration_method: string;
-  input_format: string;
+  input_format: InputFormat;
   active_mapping_version: number | null;
   active_mapping_config: Record<string, unknown> | null;
 }
@@ -47,6 +47,12 @@ export interface CreateDmsPayload {
   integration_method: 'API' | 'UPLOAD';
   input_format: InputFormat;
   mapping_config?: SourceMapping;
+}
+export interface CreateDmsBatchPayload {
+  profiles: CreateDmsPayload[];
+}
+export interface DmsBatchRegistryResult {
+  profiles: DmsRegistryEntry[];
 }
 export interface MappingPreviewPayload {
   mapping_config: SourceMapping;

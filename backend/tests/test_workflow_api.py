@@ -254,6 +254,86 @@ class TestWorkflowAPI(unittest.IsolatedAsyncioTestCase):
         finally:
             app.dependency_overrides.clear()
 
+    async def test_process_csv_and_excel_rows_use_profile_mapping(self):
+        from io import BytesIO
+        from openpyxl import Workbook
+
+        headers = [
+            "InvoiceNumber", "InvoiceDate", "DealerCode", "BuyerCode", "Currency",
+            "Subtotal", "TaxTotal", "GrandTotal", "SKU", "Description", "Qty",
+            "UnitPrice", "TaxableValue", "TaxAmount", "LineTotal",
+        ]
+        values = [
+            "ROW-001", "2026-10-01", "DEALER-TEST", "DAIMLER-DEMO", "INR",
+            "1000.00", "180.00", "1180.00", "PART-001", "Brake rotor", "2",
+            "500.00", "1000.00", "180.00", "1180.00",
+        ]
+        csv_content = (",".join(headers) + "\n" + ",".join(values)).encode()
+        workbook_buffer = BytesIO()
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(headers)
+        sheet.append([values[0], values[1], values[2], values[3], values[4], 1000, 180, 1180,
+                      values[8], values[9], 2, 500, 1000, 180, 1180])
+        workbook.save(workbook_buffer)
+        excel_content = workbook_buffer.getvalue()
+        mapping_config = {
+            "invoice_number": "InvoiceNumber", "invoice_date": "InvoiceDate",
+            "supplier_dealer_code": "DealerCode", "buyer_oem_id": "BuyerCode",
+            "currency": "Currency", "subtotal": "Subtotal", "tax_amount": "TaxTotal",
+            "total_amount": "GrandTotal",
+            "line_items": {
+                "source_field": "rows", "item_code": "SKU", "description": "Description",
+                "quantity": "Qty", "unit_price": "UnitPrice", "taxable_amount": "TaxableValue",
+                "tax_amount": "TaxAmount", "line_total": "LineTotal",
+            },
+        }
+
+        for input_format, filename, mime_type, content in (
+            ("CSV", "invoice.csv", "text/csv", csv_content),
+            ("EXCEL", "invoice.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", excel_content),
+        ):
+            with self.subTest(input_format=input_format):
+                fresh_doc = InboundDocument(
+                    id=1, dealer_id=1, dms_id=1, document_type="INVOICE",
+                    received_at=datetime.now(timezone.utc), status="RECEIVED",
+                    original_file_name=filename, mime_type=mime_type, storage_key="inbound/source",
+                )
+                fresh_doc.dealer = self.dealer
+                fresh_doc.dms = DmsSystem(
+                    id=1, name="Tabular DMS", integration_tier=2,
+                    integration_method="UPLOAD", input_format=input_format,
+                )
+                fresh_doc.invoice = None
+                mock_session = AsyncMock()
+                doc_result = MagicMock()
+                doc_result.scalar_one_or_none.return_value = fresh_doc
+                mapping_result = MagicMock()
+                mapping_result.scalar_one_or_none.return_value = MappingConfig(mapping_config=mapping_config)
+                rules_result = MagicMock()
+                rules_result.scalars.return_value.all.return_value = []
+                mock_session.execute.side_effect = [doc_result, mapping_result, rules_result]
+                mock_session.add = MagicMock()
+                mock_session.commit = AsyncMock()
+                mock_session.flush = AsyncMock()
+                mock_session.refresh = AsyncMock()
+                mock_storage = self._setup_dependencies(mock_session)
+                mock_storage.get_file_bytes.return_value = (content, mime_type)
+                try:
+                    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                        response = await client.post("/api/documents/1/process")
+                    self.assertEqual(response.status_code, 200, response.text)
+                    invoice = next(
+                        call.args[0] for call in mock_session.add.call_args_list
+                        if isinstance(call.args[0], StandardizedInvoice)
+                    )
+                    self.assertEqual(invoice.canonical_payload["invoice_number"], "ROW-001")
+                    self.assertEqual(invoice.canonical_payload["line_items"][0]["item_code"], "PART-001")
+                    self.assertEqual(response.json()["processing_status"], "processed")
+                    self.assertEqual(response.json()["source_type"], "excel" if input_format == "EXCEL" else "csv")
+                finally:
+                    app.dependency_overrides.clear()
+
     async def test_process_document_idempotent_existing_invoice(self):
         doc_with_inv = InboundDocument(
             id=1,
