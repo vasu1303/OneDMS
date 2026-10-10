@@ -8,7 +8,7 @@ The system acts as a universal bridge between fragmented dealer systems and the 
 
 ```mermaid
 
-graph TD
+graph LR
     %% Define styles
     classDef dealer fill:#e1f5fe,stroke:#03a9f4,stroke-width:2px,color:#000;
     classDef core fill:#fff3e0,stroke:#ff9800,stroke-width:2px,color:#000;
@@ -16,12 +16,14 @@ graph TD
     classDef storage fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px,color:#000;
 
     subgraph INPUTS["1. Dealer Inputs (Bring Your Own Protocol)"]
+        direction TB
         D_API["Modern DMS<br/>API / JSON"]:::dealer
         D_FILE["Legacy DMS<br/>CSV / Excel"]:::dealer
         D_MAIL["Extreme Legacy<br/>SMTP / PDF / Emails"]:::dealer
     end
 
     subgraph CORE["2. OneDMS Core Infrastructure"]
+        direction LR
         IL["Lightweight Interface Layer<br/>Ingestion"]:::core
         Bucket[("Cloud Storage / Bucket<br/>Raw Files")]:::storage
         Pipeline["LLM Processing Pipeline"]:::core
@@ -30,6 +32,7 @@ graph TD
     end
 
     subgraph OEM["3. OEM Consumption"]
+        direction TB
         Dash["OEM Web Dashboard"]:::oem
         FinalDaimler["Daimler OEM Output Format<br/>ERP / SAP"]:::oem
     end
