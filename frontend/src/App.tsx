@@ -44,7 +44,7 @@ function App() {
       </aside>
 
       <main className="shell__main" id="workspace" tabIndex={-1}>
-        <header className="workspace-band"><div><strong>Invoice operations</strong><span>Dealer invoices in one standard format</span></div><span className={`workspace-state${mockMode ? '' : ' workspace-state--live'}`}>{mockMode ? 'Development fixtures' : 'Live API mode'}</span></header>
+        <header className="workspace-band"><div><strong>Invoice operations</strong><span>Dealer invoices in one standard format</span></div></header>
         <Routes>
           <Route path="/" element={<Navigate to="/documents" replace />} />
           <Route path="/documents" element={<DocumentQueuePage />} />
