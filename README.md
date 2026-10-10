@@ -44,17 +44,24 @@ DMS Sources (API / SFTP / Upload)
 
 ## Implementation Status
 
-The runnable application includes a React frontend scaffold, FastAPI, PostgreSQL
-connection/session infrastructure, Neon Object Storage integration, and health APIs.
-PostgreSQL is for structured invoice data and object references; original PDFs,
-spreadsheets, and other source files belong in the private `onedmsinvoices` bucket.
-Credentials and storage access stay in the backend, never in the browser.
+The runnable application includes a React frontend, FastAPI ingestion and registry
+APIs, PostgreSQL connection/session infrastructure, Neon Object Storage integration,
+and health APIs. Onboarding supports JSON/API, CSV, PDF, and Excel (`.xls` and
+`.xlsx`) profiles. PostgreSQL stores structured invoice data and object references;
+original uploaded files belong in the private `onedmsinvoices` bucket. Credentials
+and storage access stay in the backend, never in the browser.
 
 The seven invoice tables described in [the database design](docs/architecture/OneDMS_Database_Design.md)
 are implemented with SQLAlchemy models and an explicit schema setup command. An idempotent seed
-script supplies synthetic demo data. Ingestion connectors remain planned. Startup does not
-create tables, buckets, or files. There is no upload API or
-authentication implementation yet.
+script supplies synthetic demo data. Startup does not create tables, buckets, or files.
+Authentication and production DMS connectors remain planned.
+
+Each DMS integration profile has one input format and its own mapping. Registering
+multiple formats creates separate profiles with the same DMS name, so each profile
+can be selected independently for intake. Excel workbooks use the first worksheet,
+with headers in row one and invoice line items in subsequent rows; each workbook
+represents one invoice. PDF extraction uses the existing local parser and does not
+perform OCR.
 
 ## Prerequisites
 

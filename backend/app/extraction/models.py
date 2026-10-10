@@ -13,6 +13,7 @@ class DocumentFormat(str, Enum):
     """Supported inbound invoice document formats."""
     JSON = "json"
     CSV = "csv"
+    EXCEL = "excel"
     PDF = "pdf"
     UNKNOWN = "unknown"
 

@@ -74,7 +74,7 @@ def to_frontend_source_type(mime_or_format: str | None) -> str:
         return "csv"
     if "pdf" in val:
         return "pdf"
-    if "xls" in val or "excel" in val:
+    if "xls" in val or "excel" in val or "spreadsheetml" in val:
         return "excel"
     if "xml" in val:
         return "xml"
@@ -287,7 +287,7 @@ class WorkflowService:
             # 6. Transform to canonical representation (Person 3)
             canonical: dict[str, Any]
 
-            if extraction_result.format in (DocumentFormat.JSON, DocumentFormat.CSV):
+            if extraction_result.format in (DocumentFormat.JSON, DocumentFormat.CSV, DocumentFormat.EXCEL):
                 # Load active mapping config (SOURCE_TO_CANONICAL) for dms_id
                 map_stmt = select(MappingConfig).where(
                     MappingConfig.mapping_direction == "SOURCE_TO_CANONICAL",
@@ -325,18 +325,10 @@ class WorkflowService:
 
                 source_data = extraction_result.source_data
                 if isinstance(source_data, list):
-                    # For CSV list of rows
-                    source_dict = {
-                        "InvoiceNumber": source_data[0].get("InvoiceNumber", f"INV-{document.id:04d}") if source_data else f"INV-{document.id:04d}",
-                        "InvoiceDate": source_data[0].get("InvoiceDate", date.today().isoformat()) if source_data else date.today().isoformat(),
-                        "DealerCode": document.dealer.dealer_code if document.dealer else "DEALER-DEMO",
-                        "BuyerCode": "DAIMLER-DEMO",
-                        "Currency": source_data[0].get("Currency", "INR") if source_data else "INR",
-                        "Subtotal": sum(Decimal(str(r.get("TaxableValue") or r.get("taxable_amount") or 0)) for r in source_data),
-                        "TaxTotal": sum(Decimal(str(r.get("TaxAmount") or r.get("tax_amount") or 0)) for r in source_data),
-                        "GrandTotal": sum(Decimal(str(r.get("LineTotal") or r.get("line_total") or 0)) for r in source_data),
-                        "rows": source_data,
-                    }
+                    if not source_data:
+                        raise OneDMSException("Spreadsheet or CSV has no invoice line rows", status_code=422)
+                    # Header fields map from the first row; line fields map over all rows.
+                    source_dict = {**source_data[0], "rows": source_data}
                     canonical = map_source_to_canonical(source_dict, mapping_config)
                 else:
                     canonical = map_source_to_canonical(source_data or {}, mapping_config)
@@ -538,6 +530,7 @@ class WorkflowService:
             await session.commit()
             await session.refresh(document)
             await session.refresh(invoice)
+            document.invoice = invoice
 
             return serialize_document_for_frontend(document)
 

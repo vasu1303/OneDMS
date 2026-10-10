@@ -3,6 +3,7 @@ import DocumentQueuePage from '@/pages/DocumentQueuePage';
 import DocumentUploadPage from '@/pages/DocumentUploadPage';
 import DocumentDetailPage from '@/pages/DocumentDetailPage';
 import InvoiceReviewPage from '@/pages/InvoiceReviewPage';
+import DmsOnboardingPage from '@/pages/DmsOnboardingPage';
 
 const mockMode = import.meta.env.DEV && import.meta.env.VITE_USE_MOCK_API === 'true';
 
@@ -32,6 +33,12 @@ function App() {
           >
             Invoice intake
           </NavLink>
+          <NavLink
+            to="/integrations/dms/new"
+            className={({ isActive }) => (isActive ? 'nav-link nav-link--active' : 'nav-link')}
+          >
+            DMS onboarding
+          </NavLink>
         </nav>
 
         <div className="nav-footer"><strong>Invoice operations</strong><p>Upload, review, approve, and download.</p></div>
@@ -49,6 +56,7 @@ function App() {
           <Route path="/" element={<Navigate to="/documents" replace />} />
           <Route path="/documents" element={<DocumentQueuePage />} />
           <Route path="/documents/new" element={<DocumentUploadPage />} />
+          <Route path="/integrations/dms/new" element={<DmsOnboardingPage />} />
           <Route path="/documents/:documentId" element={<DocumentDetailPage />} />
           <Route path="/invoices/:invoiceId" element={<InvoiceReviewPage />} />
           <Route path="*" element={<Navigate to="/documents" replace />} />

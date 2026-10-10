@@ -9,8 +9,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.schemas.registry import (
-    DealerResponse, DmsSystemCreate, DmsSystemResponse, MappingPreviewRequest,
-    MappingPreviewResponse,
+    DealerResponse, DmsSystemBatchCreate, DmsSystemBatchResponse,
+    DmsSystemCreate, DmsSystemResponse, MappingPreviewRequest, MappingPreviewResponse,
 )
 from app.models.invoice import Dealer, DmsSystem, MappingConfig
 from app.services.mapping import MappingError, map_source_to_canonical, resolve_path
@@ -76,6 +76,48 @@ async def create_dms_system(db: AsyncSession, request: DmsSystemCreate) -> DmsSy
         if isinstance(exc, IntegrityError):
             raise HTTPException(409, "DMS system or mapping conflicts with existing data.") from None
         raise HTTPException(500, "Unable to create DMS system and mapping.") from None
+
+
+async def create_dms_system_batch(
+    db: AsyncSession,
+    request: DmsSystemBatchCreate,
+) -> DmsSystemBatchResponse:
+    profiles: list[DmsSystemResponse] = []
+    try:
+        for profile_request in request.profiles:
+            dms = DmsSystem(
+                name=profile_request.name,
+                integration_tier=profile_request.integration_tier,
+                integration_method=profile_request.integration_method,
+                input_format=profile_request.input_format,
+            )
+            db.add(dms)
+            await db.flush()
+
+            mapping = MappingConfig(
+                mapping_name=f"DMS {dms.id} invoice v1",
+                mapping_direction="SOURCE_TO_CANONICAL",
+                dms_id=dms.id,
+                target_system=None,
+                document_type="INVOICE",
+                version=1,
+                is_active=True,
+                mapping_config=profile_request.mapping_config.mapper_config()
+                if profile_request.mapping_config is not None else {},
+            )
+            db.add(mapping)
+            await db.flush()
+            profiles.append(dms_response(dms, mapping))
+
+        response = DmsSystemBatchResponse(profiles=profiles)
+        await db.commit()
+        return response
+    except Exception as exc:
+        with suppress(Exception):
+            await db.rollback()
+        if isinstance(exc, IntegrityError):
+            raise HTTPException(409, "DMS system or mapping conflicts with existing data.") from None
+        raise HTTPException(500, "Unable to create DMS profiles and mappings.") from None
 
 
 def preview_mapping(request: MappingPreviewRequest) -> MappingPreviewResponse:

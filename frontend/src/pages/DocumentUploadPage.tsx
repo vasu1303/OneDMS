@@ -9,7 +9,7 @@ import Notice from '@/components/common/Notice';
 import { jsonDemoSource } from '@/constants/integrationDemo';
 import type { SourceType } from '@/types';
 
-const sourceTypes: SourceType[] = ['pdf', 'csv', 'json'];
+const sourceTypes: SourceType[] = ['pdf', 'excel', 'csv', 'json'];
 
 type InputMode = 'file' | 'json';
 
@@ -21,9 +21,12 @@ function DocumentUploadPage() {
   const [mode, setMode] = useState<InputMode>('file');
   const [dealerId, setDealerId] = useState('');
   const [dmsSystemId, setDmsSystemId] = useState(searchParams.get('dms_id') ?? '');
-  const [sourceType, setSourceType] = useState<SourceType>('pdf');
+  const [selectedSourceType, setSelectedSourceType] = useState<SourceType>('pdf');
   const selectedDealer = dealers.data?.find((dealer) => String(dealer.id) === dealerId);
   const selectedDms = systems.data?.find((system) => String(system.id) === dmsSystemId);
+  const sourceType = selectedDms && !USE_DEV_MOCK_API
+    ? selectedDms.input_format.toLowerCase() as SourceType
+    : selectedSourceType;
   const activeMode = sourceType === 'json' ? mode : 'file';
   const [file, setFile] = useState<File | null>(null);
   const [jsonText, setJsonText] = useState(JSON.stringify(jsonDemoSource, null, 2));
@@ -37,8 +40,12 @@ function DocumentUploadPage() {
     if (!file) {
       throw new Error('Choose a file before upload.');
     }
-    if (!file.name.toLowerCase().endsWith(`.${sourceType}`)) {
-      throw new Error(`Choose a .${sourceType} file or change the source type to match your file.`);
+    const filename = file.name.toLowerCase();
+    const validExtension = sourceType === 'excel'
+      ? filename.endsWith('.xlsx') || filename.endsWith('.xls')
+      : filename.endsWith(`.${sourceType}`);
+    if (!validExtension) {
+      throw new Error(sourceType === 'excel' ? 'Choose an .xls or .xlsx workbook.' : `Choose a .${sourceType} file.`);
     }
 
     const response = await uploadMutation.mutateAsync({
@@ -80,7 +87,7 @@ function DocumentUploadPage() {
       return;
     }
     if (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms || !sourceTypes.includes(sourceType))) {
-      setLocalError('Choose a registered dealer, a source DMS, and a PDF, CSV, or JSON source type.');
+      setLocalError('Choose a registered dealer and a DMS profile matching the invoice format.');
       return;
     }
 
@@ -109,7 +116,7 @@ function DocumentUploadPage() {
         </Link>
       </header>
 
-      <IntakeSummary dealer={selectedDealer ? `${selectedDealer.name} · ${selectedDealer.dealer_code}` : USE_DEV_MOCK_API ? dealerId || 'Fixture dealer' : 'Select dealer'} dms={selectedDms ? `${selectedDms.name} · #${selectedDms.id}` : USE_DEV_MOCK_API ? dmsSystemId || 'Fixture DMS' : 'Select profile'} format={selectedDms || USE_DEV_MOCK_API ? sourceType.toUpperCase() : 'Not selected'} mapping={selectedDms?.active_mapping_version != null ? `Explicit mapping v${selectedDms.active_mapping_version}` : selectedDms?.input_format === 'PDF' ? 'Existing PDF layout parser' : 'Not supplied'} />
+      <IntakeSummary dealer={selectedDealer ? `${selectedDealer.name} · ${selectedDealer.dealer_code}` : USE_DEV_MOCK_API ? dealerId || 'Fixture dealer' : 'Select dealer'} dms={selectedDms ? `${selectedDms.name} (${selectedDms.input_format}) #${selectedDms.id}` : USE_DEV_MOCK_API ? dmsSystemId || 'Fixture DMS' : 'Select profile'} format={selectedDms || USE_DEV_MOCK_API ? sourceType.toUpperCase() : 'Not selected'} mapping={selectedDms?.active_mapping_version != null ? `Explicit mapping v${selectedDms.active_mapping_version}` : selectedDms?.input_format === 'PDF' ? 'Existing PDF layout parser' : 'Not supplied'} />
       {!USE_DEV_MOCK_API && (dealers.isError || systems.isError) && <Notice kind="error"><p>Registry unavailable: {dealers.error?.message || systems.error?.message}</p><button type="button" className="button button--secondary" onClick={() => { void dealers.refetch(); void systems.refetch(); }}>Retry registries</button></Notice>}
       {!USE_DEV_MOCK_API && (dealers.isLoading || systems.isLoading) && <p role="status">Loading dealer and DMS registries…</p>}
       {!USE_DEV_MOCK_API && dealers.isSuccess && dealers.data.length === 0 && <Notice>No dealers are registered. Ask the API owner to add a dealer before intake.</Notice>}
@@ -127,7 +134,7 @@ function DocumentUploadPage() {
               value={dealerId}
               onChange={(event) => setDealerId(event.target.value)}
               placeholder="Development fixture identifier"
-            /> : <select required value={dealerId} disabled={!dealers.data?.length} onChange={(event) => setDealerId(event.target.value)}><option value="">Select dealer</option>{dealers.data?.map((dealer) => <option key={dealer.id} value={String(dealer.id)}>{dealer.name} · {dealer.dealer_code} · #{dealer.id}</option>)}</select>}
+            /> : <select required value={dealerId} disabled={!dealers.data?.length} onChange={(event) => setDealerId(event.target.value)}><option value="">Select dealer</option>{dealers.data?.map((dealer) => <option key={dealer.id} value={String(dealer.id)}>{dealer.name} ({dealer.dealer_code}) #{dealer.id}</option>)}</select>}
           </label>
 
           <label>
@@ -136,16 +143,17 @@ function DocumentUploadPage() {
               required
               type="text"
               value={dmsSystemId}
-              onChange={(event) => setDmsSystemId(event.target.value)}
+              onChange={(event) => { setDmsSystemId(event.target.value); setFile(null); setLocalError(''); }}
               placeholder="Development fixture identifier"
-            /> : <select required value={dmsSystemId} disabled={!systems.data?.length} onChange={(event) => { setDmsSystemId(event.target.value); setLocalError(''); }}><option value="">Select source DMS</option>{systems.data?.map((system) => <option key={system.id} value={String(system.id)}>{system.name} · #{system.id}</option>)}</select>}
+            /> : <select required value={dmsSystemId} disabled={!systems.data?.length} onChange={(event) => { setDmsSystemId(event.target.value); setFile(null); setLocalError(''); }}><option value="">Select source DMS profile</option>{systems.data?.map((system) => <option key={system.id} value={String(system.id)}>{system.name} ({system.input_format}) #{system.id}</option>)}</select>}
           </label>
 
           <label>
             Source type
             <select
               value={sourceType}
-              onChange={(event) => { setSourceType(event.target.value as SourceType); setFile(null); setLocalError(''); }}
+              disabled={!USE_DEV_MOCK_API && Boolean(selectedDms)}
+              onChange={(event) => { setSelectedSourceType(event.target.value as SourceType); setFile(null); setLocalError(''); }}
             >
               {sourceTypes.map((type) => (
                 <option key={type} value={type}>
@@ -174,7 +182,7 @@ function DocumentUploadPage() {
               required
               type="file"
               key={sourceType}
-              accept={`.${sourceType}`}
+              accept={sourceType === 'excel' ? '.xls,.xlsx' : `.${sourceType}`}
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             />
           </label>
@@ -191,7 +199,7 @@ function DocumentUploadPage() {
           </label>
         )}
 
-        <Notice>{sourceType === 'pdf' ? 'Any registered source DMS can submit a PDF. Select the DMS that produced it, then choose your file. Extraction and amount checks happen after upload; scanned or unfamiliar layouts may fail processing or need review.' : sourceType === 'csv' ? 'Use the supported demo CSV column layout and a matching source mapping.' : 'JSON field names must match the selected source system’s configured mapping.'}</Notice>
+        <Notice>{sourceType === 'pdf' ? 'Upload a text-based PDF. Scanned image-only PDFs and unfamiliar layouts may need reviewer correction.' : sourceType === 'excel' ? 'Upload an .xls or .xlsx workbook. The first worksheet uses its first row as column headers and subsequent rows as invoice lines.' : sourceType === 'csv' ? 'Upload a CSV with a header row and invoice line rows matching this profile’s mapping.' : 'JSON field names must match this profile’s configured mapping.'}</Notice>
 
         <div className="actions"><button type="submit" className="button button--primary" disabled={isSubmitting || (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms || !sourceTypes.includes(sourceType)))}>{isSubmitting ? 'Submitting…' : 'Submit document'}</button></div>
         </fieldset>

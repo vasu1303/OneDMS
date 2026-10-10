@@ -84,7 +84,13 @@ One row per DMS system/integration profile known to OneDMS. Multiple dealers can
 | `integration_method` | `VARCHAR(20)` | NOT NULL; e.g. `API`, `UPLOAD`, `EMAIL` |
 | `input_format` | `VARCHAR(20)` | NOT NULL; e.g. `JSON`, `CSV`, `XLSX`, `XML`, `PDF` |
 
-For the POC, one representative input format per configured DMS profile is enough. A production DMS may need multiple supported formats/profiles.
+Each profile has one input format and one active source mapping. A DMS that sends
+multiple formats is represented by multiple profiles sharing the same `name`, each
+with its own format and mapping; no separate multi-format database column is needed.
+The `EXCEL` profile accepts both `.xls` and `.xlsx`. Workbooks use the first
+worksheet, row one as headers, and subsequent rows as invoice line items, with one
+invoice per workbook. PDF intake uses the local text/table parser and does not
+include OCR.
 
 ### 4.3 `inbound_documents`
 

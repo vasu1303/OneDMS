@@ -7,11 +7,14 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from openpyxl import Workbook
+import xlwt
 
 from app.extraction.models import DocumentFormat, ExtractionResult
 from app.extraction.service import ExtractionService
 from app.extraction.parsers.json_parser import JsonExtractor
 from app.extraction.parsers.csv_parser import CsvExtractor
+from app.extraction.parsers.excel_parser import ExcelExtractor
 from app.extraction.parsers.pdf_parser import LocalPdfExtractor
 
 
@@ -141,6 +144,54 @@ class TestCsvExtractor:
         assert "empty" in result.error_message.lower()
 
 
+def create_excel_invoice_xlsx() -> bytes:
+    buffer = io.BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["InvoiceNumber", "Description", "Qty", "UnitPrice"])
+    sheet.append(["XLSX-001", "Brake rotor", 2, 125.5])
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def create_excel_invoice_xls() -> bytes:
+    buffer = io.BytesIO()
+    workbook = xlwt.Workbook()
+    sheet = workbook.add_sheet("Invoice")
+    for column, value in enumerate(("InvoiceNumber", "Description", "Qty", "UnitPrice")):
+        sheet.write(0, column, value)
+    for column, value in enumerate(("XLS-001", "Brake rotor", 2, 125.5)):
+        sheet.write(1, column, value)
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+class TestExcelExtractor:
+    def test_extract_xlsx_first_sheet_rows(self):
+        result = ExcelExtractor().extract(create_excel_invoice_xlsx())
+
+        assert result.success is True
+        assert result.format == DocumentFormat.EXCEL
+        assert result.extraction_method == "deterministic_excel"
+        assert result.source_data == [{
+            "InvoiceNumber": "XLSX-001", "Description": "Brake rotor", "Qty": 2, "UnitPrice": 125.5,
+        }]
+
+    def test_extract_xls_rows(self):
+        result = ExcelExtractor().extract(create_excel_invoice_xls())
+
+        assert result.success is True
+        assert result.source_data == [{
+            "InvoiceNumber": "XLS-001", "Description": "Brake rotor", "Qty": 2.0, "UnitPrice": 125.5,
+        }]
+
+    def test_reject_malformed_excel(self):
+        result = ExcelExtractor().extract(b"not a workbook")
+
+        assert result.success is False
+        assert "not a supported" in result.error_message.lower()
+
+
 class TestLocalPdfExtractor:
     """Tests for local PDF parsing using pdfplumber."""
 
@@ -198,6 +249,8 @@ class TestExtractionService:
         service = ExtractionService()
         assert service.detect_format(b"data", filename="invoice.json") == DocumentFormat.JSON
         assert service.detect_format(b"data", filename="export.csv") == DocumentFormat.CSV
+        assert service.detect_format(b"data", filename="workbook.xlsx") == DocumentFormat.EXCEL
+        assert service.detect_format(b"data", filename="workbook.xls") == DocumentFormat.EXCEL
         assert service.detect_format(b"data", filename="scan.pdf") == DocumentFormat.PDF
 
     def test_detect_format_by_magic_bytes(self):

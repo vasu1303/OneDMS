@@ -2,6 +2,8 @@ import axios from 'axios';
 import type { AxiosProgressEvent } from 'axios';
 import type {
   CreateDmsPayload,
+  CreateDmsBatchPayload,
+  DmsBatchRegistryResult,
   DealerRegistryEntry,
   DmsRegistryEntry,
   MappingPreviewPayload,
@@ -418,6 +420,12 @@ export const getDmsSystems = async (): Promise<DmsRegistryEntry[]> => {
 export const createDmsSystem = async (payload: CreateDmsPayload): Promise<DmsRegistryEntry> => {
   requireLiveRegistry();
   const response = await api.post<DmsRegistryEntry>('/dms-systems', payload);
+  return response.data;
+};
+
+export const createDmsSystemBatch = async (payload: CreateDmsBatchPayload): Promise<DmsBatchRegistryResult> => {
+  requireLiveRegistry();
+  const response = await api.post<DmsBatchRegistryResult>('/dms-systems/batch', payload);
   return response.data;
 };
 

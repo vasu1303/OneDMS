@@ -145,6 +145,55 @@ class TestRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(self.db.added[1].mapping_config, CONFIG)
 
+    async def test_batch_create_profiles_with_individual_mappings(self):
+        json_config = deepcopy(CONFIG)
+        csv_config = deepcopy(CONFIG)
+        csv_config["invoice_number"] = "InvoiceNumber"
+        pdf_body = self.create_body(input_format="PDF", integration_method="UPLOAD")
+        del pdf_body["mapping_config"]
+        body = {"profiles": [
+            self.create_body(name="Dealer DMS", input_format="JSON"),
+            self.create_body(name="Dealer DMS", input_format="CSV", integration_method="UPLOAD", mapping_config=csv_config),
+            self.create_body(name="Dealer DMS", input_format="EXCEL", integration_method="UPLOAD", mapping_config=CONFIG),
+            pdf_body | {"name": "Dealer DMS"},
+        ]}
+
+        response = await self.client.post("/api/dms-systems/batch", json=body)
+
+        self.assertEqual(response.status_code, 201)
+        profiles = response.json()["profiles"]
+        self.assertEqual([profile["input_format"] for profile in profiles], ["JSON", "CSV", "EXCEL", "PDF"])
+        self.assertEqual({profile["name"] for profile in profiles}, {"Dealer DMS"})
+        self.assertEqual([profile["active_mapping_config"] for profile in profiles], [json_config, csv_config, CONFIG, {}])
+        self.assertEqual(len(self.db.added), 8)
+        self.assertEqual(self.db.commit.await_count, 1)
+        self.assertEqual(self.db.flush.await_count, 8)
+        self.assertEqual(self.db.added[1].dms_id, self.db.added[0].id)
+        self.assertEqual(self.db.added[3].dms_id, self.db.added[2].id)
+
+    async def test_batch_create_rolls_back_all_profiles_on_failure(self):
+        self.db.commit.side_effect = SQLAlchemyError("password=DO_NOT_LEAK")
+        body = {"profiles": [
+            self.create_body(name="Dealer DMS"),
+            self.create_body(name="Dealer DMS", input_format="CSV", integration_method="UPLOAD"),
+        ]}
+
+        response = await self.client.post("/api/dms-systems/batch", json=body)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "Unable to create DMS profiles and mappings."})
+        self.assertEqual(len(self.db.added), 4)
+        self.db.rollback.assert_awaited_once()
+
+    async def test_batch_rejects_different_names_or_duplicate_formats(self):
+        for profiles in (
+            [self.create_body(name="DMS A"), self.create_body(name="DMS B", input_format="CSV", integration_method="UPLOAD")],
+            [self.create_body(name="DMS A"), self.create_body(name="DMS A")],
+        ):
+            response = await self.client.post("/api/dms-systems/batch", json={"profiles": profiles})
+            self.assertEqual(response.status_code, 422)
+        self.db.add.assert_not_called()
+
     async def test_json_csv_require_mapping(self):
         for format_ in ("JSON", "CSV"):
             with self.subTest(format=format_):
