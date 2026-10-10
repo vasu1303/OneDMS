@@ -542,7 +542,7 @@ class WorkflowService:
             return serialize_document_for_frontend(document)
 
         except Exception as exc:
-            log.exception(f"Processing failed for document {document_id}: {exc}")
+            log.error(f"Processing failed for document {document_id}: {exc}")
             await session.rollback()
 
             sanitized = sanitize_error(exc)

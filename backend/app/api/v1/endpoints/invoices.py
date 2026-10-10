@@ -10,11 +10,37 @@ from sqlalchemy.orm import selectinload
 from app.api.deps.db import get_db_session
 from app.exceptions.handlers import OneDMSException
 from app.models.invoice import InboundDocument, InvoiceLineItem, MappingConfig, StandardizedInvoice, ValidationRule
+from app.services.invoice_pdf import invoice_pdf_response
 from app.services.oem import OEMExportService
 from app.services.validation import ValidationContext, get_overall_status, validate_canonical_payload
 from app.services.workflow import serialize_invoice_for_frontend
 
 router = APIRouter()
+
+
+@router.get("/{invoice_id}/pdf")
+async def get_invoice_pdf(
+    invoice_id: int,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Download an approved canonical copy without changing OEM delivery state."""
+    stmt = (
+        select(StandardizedInvoice)
+        .options(
+            selectinload(StandardizedInvoice.line_items),
+            selectinload(StandardizedInvoice.document).selectinload(InboundDocument.dealer),
+        )
+        .where(StandardizedInvoice.id == invoice_id)
+    )
+    inv = (await db.execute(stmt)).scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found.")
+    if inv.review_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only approved invoices can be exported as PDF.",
+        )
+    return await invoice_pdf_response(inv)
 
 
 @router.get("")

@@ -2,6 +2,60 @@
 // for endpoint ownership, integer/decimal transport, and editable fields.
 export type Id = number;
 
+export type InputFormat = 'JSON' | 'CSV' | 'PDF';
+export interface DealerRegistryEntry {
+  id: Id;
+  dealer_code: string;
+  name: string;
+}
+export interface SourceMapping {
+  invoice_number: string;
+  invoice_date: string;
+  buyer_oem_id: string;
+  currency: string;
+  subtotal: string;
+  tax_amount: string;
+  total_amount: string;
+  supplier_dealer_code?: string;
+  line_items: {
+    source_field: string;
+    description: string;
+    quantity: string;
+    unit_price: string;
+    taxable_amount: string;
+    tax_amount: string;
+    line_total: string;
+    item_code?: string;
+    chassis_number?: string;
+    item_category?: string;
+    discount_amount?: string;
+    tax_rate?: string;
+  };
+}
+export interface DmsRegistryEntry {
+  id: Id;
+  name: string;
+  integration_tier: number;
+  integration_method: string;
+  input_format: string;
+  active_mapping_version: number | null;
+  active_mapping_config: Record<string, unknown> | null;
+}
+export interface CreateDmsPayload {
+  name: string;
+  integration_tier: number;
+  integration_method: 'API' | 'UPLOAD';
+  input_format: InputFormat;
+  mapping_config?: SourceMapping;
+}
+export interface MappingPreviewPayload {
+  mapping_config: SourceMapping;
+  payload: Record<string, unknown>;
+}
+export interface MappingPreviewResult {
+  canonical_candidate: Record<string, unknown>;
+}
+
 export type SourceType = 'json' | 'xml' | 'csv' | 'excel' | 'pdf' | 'flatfile';
 
 export type ProcessingStatus =
@@ -102,14 +156,14 @@ export interface InvoiceDetail {
 
 export interface DocumentUploadPayload {
   dealer_id: string;
-  dms_system_id: string;
+  dms_id: string;
   source_type: SourceType;
   file: File;
 }
 
 export interface JsonDocumentSubmission {
   dealer_id: string;
-  dms_system_id: string;
+  dms_id: string;
   payload: Record<string, unknown>;
 }
 
@@ -120,5 +174,5 @@ export interface InvoicePatchPayload {
 
 export interface InvoiceReviewPayload {
   decision: 'approve' | 'reject';
-  comment?: string;
+  notes?: string;
 }
