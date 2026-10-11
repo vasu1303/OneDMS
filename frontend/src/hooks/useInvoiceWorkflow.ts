@@ -12,7 +12,6 @@ import {
   processDocument,
   reviewInvoice,
   uploadDocument,
-  uploadDocumentJson,
 } from '@/services/api';
 import type {
   DocumentDetail,
@@ -76,16 +75,6 @@ export const useUploadDocument = (onProgress: (progress: number) => void) => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: DocumentUploadPayload) => uploadDocument(payload, onProgress),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['documents'] });
-    },
-  });
-};
-
-export const useUploadJsonDocument = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: uploadDocumentJson,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
     },

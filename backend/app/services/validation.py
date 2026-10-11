@@ -131,11 +131,20 @@ def validate_canonical_payload(
                     ))
                     
                 if abs(calc_tax - tax) > tolerance:
-                    results.append(ValidationResult(
-                        rule_code=code, severity=severity,
-                        message=f"Calculated lines tax {calc_tax} != header tax {tax}",
-                        is_valid=False, field=config['tax_field']
-                    ))
+                    # If line-level tax wasn't extracted or doesn't exist, it sums to 0. 
+                    # Downgrade to WARNING instead of blocking processing.
+                    if calc_tax == 0 and tax > 0:
+                        results.append(ValidationResult(
+                            rule_code=code, severity='WARNING',
+                            message=f"Line taxes are omitted (sum to 0.0) but header tax is {tax}",
+                            is_valid=False, field=config['tax_field']
+                        ))
+                    else:
+                        results.append(ValidationResult(
+                            rule_code=code, severity=severity,
+                            message=f"Calculated lines tax {calc_tax} != header tax {tax}",
+                            is_valid=False, field=config['tax_field']
+                        ))
 
             except (InvalidOperation, TypeError):
                 results.append(ValidationResult(

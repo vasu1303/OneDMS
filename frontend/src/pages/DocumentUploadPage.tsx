@@ -1,51 +1,68 @@
 import { useState } from 'react';
-import type { FormEvent } from 'react';
+import type { DragEvent, FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { useUploadDocument, useUploadJsonDocument } from '@/hooks/useInvoiceWorkflow';
+import { useUploadDocument } from '@/hooks/useInvoiceWorkflow';
 import { useDealers, useDmsSystems } from '@/hooks/useRegistry';
 import { USE_DEV_MOCK_API } from '@/services/api';
 import IntakeSummary from '@/components/common/IntakeSummary';
 import Notice from '@/components/common/Notice';
-import { jsonDemoSource } from '@/constants/integrationDemo';
 import type { SourceType } from '@/types';
 
-const sourceTypes: SourceType[] = ['pdf', 'excel', 'csv', 'json'];
+const sourceTypes: Array<{ type: SourceType; label: string; badge: string; desc: string }> = [
+  { type: 'pdf', label: 'Digital PDF', badge: 'PDF', desc: 'OCR & Layout Parser' },
+  { type: 'excel', label: 'Excel Sheet', badge: 'XLSX / XLS', desc: 'Worksheet Header & Lines' },
+  { type: 'csv', label: 'CSV Flatfile', badge: 'CSV EDI', desc: 'Delimited Catalog Rows' },
+  { type: 'json', label: 'JSON API Feed', badge: 'JSON', desc: 'Structured Payload Feed' },
+];
 
-type InputMode = 'file' | 'json';
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
 
 function DocumentUploadPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const dealers = useDealers();
   const systems = useDmsSystems();
-  const [mode, setMode] = useState<InputMode>('file');
   const [dealerId, setDealerId] = useState('');
   const [dmsSystemId, setDmsSystemId] = useState(searchParams.get('dms_id') ?? '');
   const [selectedSourceType, setSelectedSourceType] = useState<SourceType>('pdf');
-  const selectedDealer = dealers.data?.find((dealer) => String(dealer.id) === dealerId);
-  const selectedDms = systems.data?.find((system) => String(system.id) === dmsSystemId);
-  const sourceType = selectedDms && !USE_DEV_MOCK_API
-    ? selectedDms.input_format.toLowerCase() as SourceType
-    : selectedSourceType;
-  const activeMode = sourceType === 'json' ? mode : 'file';
   const [file, setFile] = useState<File | null>(null);
-  const [jsonText, setJsonText] = useState(JSON.stringify(jsonDemoSource, null, 2));
+  const [isDragOver, setIsDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [localError, setLocalError] = useState('');
 
+  const selectedDealer = dealers.data?.find((dealer) => String(dealer.id) === dealerId);
+  const selectedDms = systems.data?.find((system) => String(system.id) === dmsSystemId);
+  const sourceType = selectedSourceType;
+
   const uploadMutation = useUploadDocument((progress) => setUploadProgress(progress));
-  const uploadJsonMutation = useUploadJsonDocument();
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setFile(e.dataTransfer.files[0]);
+      setLocalError('');
+    }
+  };
 
   const submitFile = async () => {
     if (!file) {
-      throw new Error('Choose a file before upload.');
-    }
-    const filename = file.name.toLowerCase();
-    const validExtension = sourceType === 'excel'
-      ? filename.endsWith('.xlsx') || filename.endsWith('.xls')
-      : filename.endsWith(`.${sourceType}`);
-    if (!validExtension) {
-      throw new Error(sourceType === 'excel' ? 'Choose an .xls or .xlsx workbook.' : `Choose a .${sourceType} file.`);
+      throw new Error('Please select or drop an invoice file to proceed.');
     }
 
     const response = await uploadMutation.mutateAsync({
@@ -58,164 +75,310 @@ function DocumentUploadPage() {
     return response.id;
   };
 
-  const submitJson = async () => {
-    let payload: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(jsonText);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('JSON must be an object, not an array, scalar, or null.');
-      payload = parsed as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(error instanceof SyntaxError ? 'JSON is malformed. Correct the syntax and submit again.' : error instanceof Error ? error.message : 'JSON payload is not valid.');
-    }
-
-    const response = await uploadJsonMutation.mutateAsync({
-      dealer_id: dealerId.trim(),
-      dms_id: dmsSystemId.trim(),
-      payload,
-    });
-
-    return response.id;
-  };
-
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (uploadMutation.isPending || uploadJsonMutation.isPending) return;
-    setLocalError(''); setUploadProgress(0); uploadMutation.reset(); uploadJsonMutation.reset();
+    if (uploadMutation.isPending) return;
+    setLocalError('');
+    setUploadProgress(0);
+    uploadMutation.reset();
 
     if (!dealerId.trim() || !dmsSystemId.trim()) {
-      setLocalError('Select a dealer and DMS integration profile.');
+      setLocalError('Select both a registered dealer and a DMS integration profile.');
       return;
     }
-    if (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms || !sourceTypes.includes(sourceType))) {
-      setLocalError('Choose a registered dealer and a DMS profile matching the invoice format.');
+    if (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms)) {
+      setLocalError('Choose a valid registered dealer and a DMS integration profile.');
+      return;
+    }
+    if (!file) {
+      setLocalError('Please attach an invoice file to upload.');
       return;
     }
 
     try {
-      const documentId = activeMode === 'file' ? await submitFile() : await submitJson();
+      const documentId = await submitFile();
       navigate(`/documents/${documentId}`);
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : 'Submission failed. Retry.');
+      setLocalError(error instanceof Error ? error.message : 'Submission failed. Please check network connectivity.');
     } finally {
       setUploadProgress(0);
     }
   };
 
-  const isSubmitting = uploadMutation.isPending || uploadJsonMutation.isPending;
-  const error = localError;
+  const isSubmitting = uploadMutation.isPending;
 
   return (
-    <section className="view">
+    <section className="view intake-view">
       <header className="view__header">
         <div>
-          <h1>Invoice intake</h1>
-          <p className="muted">Select a dealer and source system, then upload an invoice for review.</p>
+          <div className="view__eyebrow">
+            <span>CENTRAL INGESTION PIPELINE</span>
+          </div>
+          <h1>Invoice Intake & Normalization</h1>
+          <p className="muted">
+            Submit dealer invoices to extract, standardize, and validate into canonical OEM format.
+          </p>
         </div>
         <Link to="/documents" className="button button--secondary">
-          Back to queue
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+          <span>Back to Queue</span>
         </Link>
       </header>
 
-      <IntakeSummary dealer={selectedDealer ? `${selectedDealer.name} · ${selectedDealer.dealer_code}` : USE_DEV_MOCK_API ? dealerId || 'Fixture dealer' : 'Select dealer'} dms={selectedDms ? `${selectedDms.name} (${selectedDms.input_format}) #${selectedDms.id}` : USE_DEV_MOCK_API ? dmsSystemId || 'Fixture DMS' : 'Select profile'} format={selectedDms || USE_DEV_MOCK_API ? sourceType.toUpperCase() : 'Not selected'} mapping={selectedDms?.active_mapping_version != null ? `Explicit mapping v${selectedDms.active_mapping_version}` : selectedDms?.input_format === 'PDF' ? 'Existing PDF layout parser' : 'Not supplied'} />
-      {!USE_DEV_MOCK_API && (dealers.isError || systems.isError) && <Notice kind="error"><p>Registry unavailable: {dealers.error?.message || systems.error?.message}</p><button type="button" className="button button--secondary" onClick={() => { void dealers.refetch(); void systems.refetch(); }}>Retry registries</button></Notice>}
-      {!USE_DEV_MOCK_API && (dealers.isLoading || systems.isLoading) && <p role="status">Loading dealer and DMS registries…</p>}
-      {!USE_DEV_MOCK_API && dealers.isSuccess && dealers.data.length === 0 && <Notice>No dealers are registered. Ask the API owner to add a dealer before intake.</Notice>}
-      {!USE_DEV_MOCK_API && systems.isSuccess && systems.data.length === 0 && <Notice>No source systems are available. Ask the API owner to configure the demo systems.</Notice>}
-      {!USE_DEV_MOCK_API && dmsSystemId && systems.isSuccess && !selectedDms && <Notice kind="error">DMS #{dmsSystemId} is not in the current registry. Select an available profile.</Notice>}
-      <form className="form intake-form" onSubmit={onSubmit}>
-        <fieldset disabled={isSubmitting}><legend className="sr-only">Document submission</legend>
-        {USE_DEV_MOCK_API && <Notice>Development-only fixture intake. These submissions do not create live records.</Notice>}
-        <div className="form-grid">
-          <label>
-            {USE_DEV_MOCK_API ? 'Fixture dealer ID' : 'Registered dealer'}
-            {USE_DEV_MOCK_API ? <input
-              required
-              type="text"
-              value={dealerId}
-              onChange={(event) => setDealerId(event.target.value)}
-              placeholder="Development fixture identifier"
-            /> : <select required value={dealerId} disabled={!dealers.data?.length} onChange={(event) => setDealerId(event.target.value)}><option value="">Select dealer</option>{dealers.data?.map((dealer) => <option key={dealer.id} value={String(dealer.id)}>{dealer.name} ({dealer.dealer_code}) #{dealer.id}</option>)}</select>}
-          </label>
+      {/* Intake Context Strip */}
+      <IntakeSummary
+        dealer={selectedDealer ? `${selectedDealer.name} (${selectedDealer.dealer_code})` : USE_DEV_MOCK_API ? dealerId || 'Fixture Dealer' : 'Select dealer profile'}
+        dms={selectedDms ? `${selectedDms.name} · ${selectedDms.input_format}` : USE_DEV_MOCK_API ? dmsSystemId || 'Fixture DMS' : 'Select source DMS'}
+        format={selectedDms || USE_DEV_MOCK_API ? sourceType.toUpperCase() : 'Not selected'}
+        mapping={selectedDms?.active_mapping_version != null ? `Canonical v${selectedDms.active_mapping_version}` : selectedDms?.input_format === 'PDF' ? 'PDF Text & LLM Normalizer' : 'Profile mapping ready'}
+      />
 
-          <label>
-            {USE_DEV_MOCK_API ? 'Fixture DMS ID' : 'Source DMS'}
-            {USE_DEV_MOCK_API ? <input
-              required
-              type="text"
-              value={dmsSystemId}
-              onChange={(event) => { setDmsSystemId(event.target.value); setFile(null); setLocalError(''); }}
-              placeholder="Development fixture identifier"
-            /> : <select required value={dmsSystemId} disabled={!systems.data?.length} onChange={(event) => { setDmsSystemId(event.target.value); setFile(null); setLocalError(''); }}><option value="">Select source DMS profile</option>{systems.data?.map((system) => <option key={system.id} value={String(system.id)}>{system.name} ({system.input_format}) #{system.id}</option>)}</select>}
-          </label>
+      {!USE_DEV_MOCK_API && (dealers.isError || systems.isError) && (
+        <Notice kind="error">
+          <p>Registry service unavailable: {dealers.error?.message || systems.error?.message}</p>
+          <button type="button" className="button button--secondary" onClick={() => { void dealers.refetch(); void systems.refetch(); }}>
+            Retry Registries
+          </button>
+        </Notice>
+      )}
 
-          <label>
-            Source type
-            <select
-              value={sourceType}
-              disabled={!USE_DEV_MOCK_API && Boolean(selectedDms)}
-              onChange={(event) => { setSelectedSourceType(event.target.value as SourceType); setFile(null); setLocalError(''); }}
-            >
-              {sourceTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type.toUpperCase()}
-                </option>
+      <form className="form intake-form-modern" onSubmit={onSubmit}>
+        <fieldset disabled={isSubmitting}>
+          {/* Step 1: Integration Profiling */}
+          <div className="form-card">
+            <div className="form-card__header">
+              <span className="step-badge">STEP 1</span>
+              <div>
+                <strong>Ingestion Routing & System Binding</strong>
+                <p className="muted">Identify the originating dealer and DMS configuration profile.</p>
+              </div>
+            </div>
+
+            <div className="form-grid">
+              <label>
+                <span>Registered Dealership</span>
+                {USE_DEV_MOCK_API ? (
+                  <input
+                    required
+                    type="text"
+                    value={dealerId}
+                    onChange={(e) => setDealerId(e.target.value)}
+                    placeholder="Enter fixture dealer ID"
+                  />
+                ) : (
+                  <select
+                    required
+                    value={dealerId}
+                    disabled={!dealers.data?.length}
+                    onChange={(e) => setDealerId(e.target.value)}
+                  >
+                    <option value="">Select a registered dealership...</option>
+                    {dealers.data?.map((dealer) => (
+                      <option key={dealer.id} value={String(dealer.id)}>
+                        {dealer.name} ({dealer.dealer_code})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
+
+              <label>
+                <span>Source DMS System Profile</span>
+                {USE_DEV_MOCK_API ? (
+                  <input
+                    required
+                    type="text"
+                    value={dmsSystemId}
+                    onChange={(e) => { setDmsSystemId(e.target.value); setFile(null); setLocalError(''); }}
+                    placeholder="Enter fixture DMS ID"
+                  />
+                ) : (
+                  <select
+                    required
+                    value={dmsSystemId}
+                    disabled={!systems.data?.length}
+                    onChange={(e) => { setDmsSystemId(e.target.value); setFile(null); setLocalError(''); }}
+                  >
+                    <option value="">Select source DMS profile...</option>
+                    {systems.data?.map((system) => (
+                      <option key={system.id} value={String(system.id)}>
+                        {system.name} — Tier {system.integration_tier} ({system.input_format})
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
+            </div>
+          </div>
+
+          {/* Step 2: Payload Source Selection & Upload */}
+          <div className="form-card">
+            <div className="form-card__header">
+              <span className="step-badge">STEP 2</span>
+              <div>
+                <strong>Document Format & File Payload</strong>
+                <p className="muted">Select payload type and attach the invoice document.</p>
+              </div>
+            </div>
+
+            <div className="format-selector-grid">
+              {sourceTypes.map((fmt) => (
+                <button
+                  type="button"
+                  key={fmt.type}
+                  className={`format-card-btn ${sourceType === fmt.type ? 'format-card-btn--active' : ''}`}
+                  onClick={() => { setSelectedSourceType(fmt.type); setFile(null); setLocalError(''); }}
+                >
+                  <div className="format-card-btn__top">
+                    <strong>{fmt.label}</strong>
+                    <span className="format-card-btn__badge">{fmt.badge}</span>
+                  </div>
+                  <small>{fmt.desc}</small>
+                </button>
               ))}
-            </select>
-          </label>
+            </div>
 
-          <label>
-            Submission mode
-            <select
-              value={activeMode}
-              onChange={(event) => { setMode(event.target.value as InputMode); setLocalError(''); setUploadProgress(0); }}
+            {/* Drag & Drop File Zone */}
+            <div
+              className={`dropzone ${isDragOver ? 'dropzone--active' : ''} ${file ? 'dropzone--has-file' : ''}`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
             >
-              <option value="file">Multipart file</option>
-              {sourceType === 'json' && <option value="json">JSON payload</option>}
-            </select>
-          </label>
-        </div>
+              <input
+                id="file-upload-input"
+                type="file"
+                className="dropzone__input"
+                key={sourceType}
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              />
 
-        {activeMode === 'file' ? (
-          <label>
-            Invoice file
-            <input
-              required
-              type="file"
-              key={sourceType}
-              accept={sourceType === 'excel' ? '.xls,.xlsx' : `.${sourceType}`}
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            />
-          </label>
-        ) : (
-          <label>
-            JSON payload
-            <textarea
-              aria-label="JSON payload"
-              rows={14}
-              value={jsonText}
-              onChange={(event) => setJsonText(event.target.value)}
-              spellCheck={false}
-            />
-          </label>
-        )}
+              {!file ? (
+                <label htmlFor="file-upload-input" className="dropzone__content">
+                  <div className="dropzone__icon-circle">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                  </div>
+                  <div className="dropzone__text">
+                    <strong>Choose a file or drag & drop it here</strong>
+                    <p className="muted">
+                      Supported formats: PDF, CSV, Excel (.xlsx, .xls), JSON (Max 10 MB)
+                    </p>
+                  </div>
+                  <span className="button button--secondary button--sm">Browse Files</span>
+                </label>
+              ) : (
+                <div className="selected-file-preview">
+                  <div className="file-info-col">
+                    <div className="file-icon-badge">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                        <line x1="16" y1="13" x2="8" y2="13" />
+                        <line x1="16" y1="17" x2="8" y2="17" />
+                        <polyline points="10 9 9 9 8 9" />
+                      </svg>
+                    </div>
+                    <div>
+                      <strong className="file-name">{file.name}</strong>
+                      <div className="file-meta">
+                        <span>{formatBytes(file.size)}</span>
+                        <span>•</span>
+                        <span className="file-type-pill">{sourceType.toUpperCase()}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="button button--ghost button--sm"
+                    onClick={() => setFile(null)}
+                  >
+                    Change File
+                  </button>
+                </div>
+              )}
+            </div>
 
-        <Notice>{sourceType === 'pdf' ? 'Upload a text-based PDF. Scanned image-only PDFs and unfamiliar layouts may need reviewer correction.' : sourceType === 'excel' ? 'Upload an .xls or .xlsx workbook. The first worksheet uses its first row as column headers and subsequent rows as invoice lines.' : sourceType === 'csv' ? 'Upload a CSV with a header row and invoice line rows matching this profile’s mapping.' : 'JSON field names must match this profile’s configured mapping.'}</Notice>
+            <div className="format-instruction">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+              <span>
+                {sourceType === 'pdf'
+                  ? 'Digital PDF text extraction will identify invoice headers, totals, line items, and chassis/VIN numbers.'
+                  : sourceType === 'excel'
+                  ? 'Excel workbooks (.xlsx, .xls) will map sheet headers to canonical Daimler fields automatically.'
+                  : sourceType === 'csv'
+                  ? 'CSV files will parse header rows and line items against the selected DMS profile catalog mapping.'
+                  : 'JSON feeds will be parsed against registered DMS schema bindings.'}
+              </span>
+            </div>
+          </div>
 
-        <div className="actions"><button type="submit" className="button button--primary" disabled={isSubmitting || (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms || !sourceTypes.includes(sourceType)))}>{isSubmitting ? 'Submitting…' : 'Submit document'}</button></div>
+          {/* Action Row */}
+          <div className="intake-actions">
+            <button
+              type="submit"
+              className="button button--primary button--lg"
+              disabled={isSubmitting || (!USE_DEV_MOCK_API && (!selectedDealer || !selectedDms || !file))}
+            >
+              {isSubmitting ? (
+                <>
+                  <span className="button-spinner"></span>
+                  <span>Ingesting & Processing...</span>
+                </>
+              ) : (
+                <>
+                  <span>Submit Document for Processing</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </>
+              )}
+            </button>
+          </div>
         </fieldset>
 
-        {isSubmitting && activeMode === 'file' ? (
-          <div role="status"><p className="muted">{uploadProgress === 100 ? 'File sent. Waiting for the server to accept the document…' : `Uploading file… ${uploadProgress}%`}</p><progress aria-label="File upload progress" max={100} value={uploadProgress} /></div>
-        ) : null}
+        {isSubmitting && (
+          <div className="upload-progress-card" role="status">
+            <div className="progress-label-row">
+              <span className="muted">
+                {uploadProgress === 100
+                  ? 'File uploaded. Running extraction & validation engine...'
+                  : `Transmitting payload to object storage (${uploadProgress}%)...`}
+              </span>
+              <strong>{uploadProgress}%</strong>
+            </div>
+            <div className="progress-track">
+              <div
+                className="progress-bar-fill"
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
 
-        {isSubmitting && activeMode === 'json' ? <p className="muted" role="status">Submitting JSON. Waiting for the server response…</p> : null}
-
-        {error ? (
-          <p className="panel panel--error" role="alert">
-            Submission failed: {error}
-          </p>
-        ) : null}
-
+        {localError && (
+          <div className="panel panel--error" role="alert">
+            <div className="error-title-row">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+              <strong>Submission Error</strong>
+            </div>
+            <p>{localError}</p>
+          </div>
+        )}
       </form>
     </section>
   );

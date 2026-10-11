@@ -31,7 +31,6 @@ import {
   mockProcessDocument,
   mockReviewInvoice,
   mockUploadDocument,
-  mockUploadJson,
   patchMockInvoice,
   getMockSource,
 } from '@/services/mockWorkflowApi';
@@ -337,19 +336,6 @@ export const uploadDocument = async (
   return loadAcceptedDocument(response.data);
 };
 
-export const uploadDocumentJson = async (payload: {
-  dealer_id: string;
-  dms_id: string;
-  payload: Record<string, unknown>;
-}): Promise<DocumentDetail> => {
-  if (USE_DEV_MOCK_API) {
-    return mockUploadJson(payload);
-  }
-
-  const response = await api.post('/documents/json', payload);
-  return loadAcceptedDocument(response.data);
-};
-
 export const processDocument = async (documentId: Id): Promise<DocumentDetail> => {
   if (USE_DEV_MOCK_API) {
     return mockProcessDocument(documentId);
@@ -401,36 +387,36 @@ export const reviewInvoice = async (
   return normalizeInvoice(response.data);
 };
 
-const requireLiveRegistry = () => {
+const requireBackendRegistry = () => {
   if (USE_DEV_MOCK_API) throw new Error('DMS registry and mapping preview are unavailable in development fixture mode. Disable mock mode to use the real registry.');
 };
 
 export const getDealers = async (): Promise<DealerRegistryEntry[]> => {
-  requireLiveRegistry();
+  requireBackendRegistry();
   const response = await api.get<DealerRegistryEntry[]>('/dealers');
   return response.data;
 };
 
 export const getDmsSystems = async (): Promise<DmsRegistryEntry[]> => {
-  requireLiveRegistry();
+  requireBackendRegistry();
   const response = await api.get<DmsRegistryEntry[]>('/dms-systems');
   return response.data;
 };
 
 export const createDmsSystem = async (payload: CreateDmsPayload): Promise<DmsRegistryEntry> => {
-  requireLiveRegistry();
+  requireBackendRegistry();
   const response = await api.post<DmsRegistryEntry>('/dms-systems', payload);
   return response.data;
 };
 
 export const createDmsSystemBatch = async (payload: CreateDmsBatchPayload): Promise<DmsBatchRegistryResult> => {
-  requireLiveRegistry();
+  requireBackendRegistry();
   const response = await api.post<DmsBatchRegistryResult>('/dms-systems/batch', payload);
   return response.data;
 };
 
 export const previewDmsMapping = async (payload: MappingPreviewPayload): Promise<MappingPreviewResult> => {
-  requireLiveRegistry();
+  requireBackendRegistry();
   const response = await api.post<MappingPreviewResult>('/dms-systems/preview', payload);
   return response.data;
 };

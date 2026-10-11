@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<InvoiceDocument>
+   <Header>
+      <InvoiceNumber>XML-8802</InvoiceNumber>
+      <Date>2026-10-16</Date>
+      <OEM_ID>DAIMLER-DEMO</OEM_ID>
+      <Totals>
+         <Currency>EUR</Currency>
+         <Net>400.00</Net>
+         <VAT>80.00</VAT>
+         <Gross>480.00</Gross>
+      </Totals>
+   </Header>
+   <LineItems>
+      <Item>
+         <Code>FL-22</Code>
+         <Description>Oil Filter</Description>
+         <Quantity>10</Quantity>
+         <UnitPrice>40.00</UnitPrice>
+      </Item>
+   </LineItems>
+</InvoiceDocument>

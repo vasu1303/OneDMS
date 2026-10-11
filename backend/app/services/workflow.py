@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
-import re
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -12,10 +13,11 @@ from sqlalchemy.orm import selectinload
 
 from app.core.logging import log
 from app.exceptions.handlers import NotFoundException, OneDMSException
-from app.extraction.models import CanonicalInvoiceCandidate, DocumentFormat, ExtractionResult
+from app.extraction.llm_extractor import llm_extract_invoice, llm_map_to_canonical, llm_normalize_any
+from app.extraction.models import CanonicalInvoiceCandidate, DocumentFormat
 from app.extraction.service import extraction_service
 from app.models.invoice import (
-    Dealer, DmsSystem, InboundDocument, InvoiceLineItem, MappingConfig,
+    Dealer, InboundDocument, InvoiceLineItem, MappingConfig,
     StandardizedInvoice, ValidationRule,
 )
 from app.services.mapping import map_source_to_canonical
@@ -182,7 +184,87 @@ def serialize_invoice_for_frontend(inv: StandardizedInvoice) -> dict[str, Any]:
 
 
 class WorkflowService:
-    """Person 5 module for orchestrating the end-to-end invoice processing workflow."""
+    """Orchestrates the end-to-end invoice processing workflow: extraction → mapping → validation → persistence."""
+
+    @staticmethod
+    async def _load_validation_rules(session: AsyncSession) -> list[dict]:
+        """Load all active validation rules for invoices from the database."""
+        stmt = select(ValidationRule).where(
+            ValidationRule.document_type == "INVOICE",
+            ValidationRule.is_active == True,  # noqa: E712
+        )
+        result = await session.execute(stmt)
+        return [
+            {
+                "rule_code": r.rule_code,
+                "severity": r.severity,
+                "rule_config": r.rule_config,
+            }
+            for r in result.scalars().all()
+        ]
+
+    @staticmethod
+    async def _is_registered_dealer(session: AsyncSession, dealer_code: str) -> bool:
+        """Check if a dealer code exists in the database."""
+        stmt = select(func.count()).select_from(Dealer).where(Dealer.dealer_code == dealer_code)
+        count = await session.scalar(stmt)
+        return count > 0
+
+    @staticmethod
+    async def _is_duplicate_invoice(session: AsyncSession, dealer_code: str, invoice_number: str, invoice_date: str) -> bool:
+        """Check if an invoice with the same dealer, number, and date already exists."""
+        try:
+            parsed_date = date.fromisoformat(invoice_date)
+        except (ValueError, TypeError):
+            return False
+
+        stmt = (
+            select(func.count())
+            .select_from(StandardizedInvoice)
+            .join(InboundDocument, StandardizedInvoice.document_id == InboundDocument.id)
+            .join(Dealer, InboundDocument.dealer_id == Dealer.id)
+            .where(
+                Dealer.dealer_code == dealer_code,
+                StandardizedInvoice.invoice_number == invoice_number,
+                StandardizedInvoice.invoice_date == parsed_date,
+            )
+        )
+        count = await session.scalar(stmt)
+        return count > 0
+
+    @staticmethod
+    async def _build_canonical_from_candidate(
+        candidate: CanonicalInvoiceCandidate, dealer_code: str | None
+    ) -> dict[str, Any]:
+        """Convert a CanonicalInvoiceCandidate (from PDF/LLM extraction) into a dict."""
+        candidate_lines = []
+        for l in candidate.line_items:
+            candidate_lines.append({
+                "line_number": l.line_number,
+                "item_code": l.item_code,
+                "description": l.description,
+                "quantity": str(l.quantity),
+                "unit_price": str(l.unit_price),
+                "discount_amount": str(l.discount_amount),
+                "taxable_amount": str(l.taxable_amount or (l.quantity * l.unit_price)),
+                "tax_rate": str(l.tax_rate) if l.tax_rate is not None else None,
+                "tax_amount": str(l.tax_amount),
+                "line_total": str(l.line_total),
+                "chassis_number": l.chassis_number,
+                "item_category": "VEHICLE" if l.chassis_number else "PART",
+            })
+
+        return {
+            "invoice_number": candidate.invoice_number,
+            "invoice_date": candidate.invoice_date,
+            "supplier_dealer_code": dealer_code,
+            "buyer_oem_id": candidate.buyer_oem_id,
+            "currency": candidate.currency,
+            "subtotal": str(candidate.subtotal_amount or (candidate.total_amount - (candidate.tax_amount or Decimal("0.0")))),
+            "tax_amount": str(candidate.tax_amount or Decimal("0.0")),
+            "total_amount": str(candidate.total_amount),
+            "line_items": candidate_lines,
+        }
 
     @staticmethod
     async def process_document(
@@ -193,7 +275,7 @@ class WorkflowService:
     ) -> dict[str, Any]:
         """Runs the extraction, mapping, validation, and persistence pipeline atomically.
 
-        Integrates Person 2 (ExtractionService) and Person 3 (mapping & validation engines).
+        Integrates deterministic extraction, LLM fallback, mapping & validation engines.
         Ensures idempotency, atomic persistence, and consistent status transitions.
         """
         # 1. Fetch document with dealer, dms, and existing invoice
@@ -244,33 +326,12 @@ class WorkflowService:
                 content = file_bytes
                 content_type = document.mime_type or storage_content_type
             else:
-                # Synthetic fallback if neither raw_payload nor storage_key is present
-                content = json.dumps({
-                    "invoiceNo": f"INV-{document.id:04d}",
-                    "billDate": date.today().isoformat(),
-                    "dealerCode": document.dealer.dealer_code if document.dealer else "DEALER-DEMO",
-                    "currencyCode": "INR",
-                    "subTotal": "1000.00",
-                    "taxTotal": "180.00",
-                    "grandTotal": "1180.00",
-                    "items": [
-                        {
-                            "sku": "PART-001",
-                            "description": "Standard component",
-                            "qty": "1.000",
-                            "rate": "1000.00",
-                            "discount": "0.00",
-                            "taxableValue": "1000.00",
-                            "taxRate": "18.00",
-                            "taxAmount": "180.00",
-                            "lineTotal": "1180.00",
-                            "category": "PART",
-                        }
-                    ]
-                })
-                content_type = "application/json"
+                raise OneDMSException(
+                    "Document has no raw payload and no storage key; cannot process.",
+                    status_code=422,
+                )
 
-            # 5. Invoke Person 2 extraction engine
+            # 5. Invoke deterministic extraction engine
             log.info(f"Extracting document {document_id} using ExtractionService")
             extraction_result = extraction_service.extract_document(
                 content=content,
@@ -278,13 +339,14 @@ class WorkflowService:
                 content_type=content_type,
             )
 
+            # 6. If deterministic extraction failed, fall back to LLM
             if not extraction_result.success:
-                raise OneDMSException(
-                    extraction_result.error_message or "Extraction failed to parse document structure",
-                    status_code=422,
+                log.warning(
+                    f"Deterministic extraction failed for document {document_id}: "
+                    f"{extraction_result.error_message}. Attempting LLM fallback."
                 )
 
-            # 6. Transform to canonical representation (Person 3)
+            # 6. Transform to canonical representation
             canonical: dict[str, Any]
 
             if extraction_result.format in (DocumentFormat.JSON, DocumentFormat.CSV, DocumentFormat.EXCEL):
@@ -330,84 +392,79 @@ class WorkflowService:
                     # Header fields map from the first row; line fields map over all rows.
                     source_dict = {**source_data[0], "rows": source_data}
                     canonical = map_source_to_canonical(source_dict, mapping_config)
-                else:
-                    canonical = map_source_to_canonical(source_data or {}, mapping_config)
-
-            elif extraction_result.format == DocumentFormat.PDF and extraction_result.canonical_candidate:
-                # PDF extractor already proposes CanonicalInvoiceCandidate
-                cand: CanonicalInvoiceCandidate = extraction_result.canonical_candidate
-                candidate_lines = []
-                for l in cand.line_items:
-                    candidate_lines.append({
-                        "line_number": l.line_number,
-                        "item_code": l.item_code,
-                        "description": l.description,
-                        "quantity": str(l.quantity),
-                        "unit_price": str(l.unit_price),
-                        "discount_amount": str(l.discount_amount),
-                        "taxable_amount": str(l.taxable_amount or (l.quantity * l.unit_price)),
-                        "tax_rate": str(l.tax_rate) if l.tax_rate is not None else None,
-                        "tax_amount": str(l.tax_amount),
-                        "line_total": str(l.line_total),
-                        "chassis_number": l.chassis_number,
-                        "item_category": "VEHICLE" if l.chassis_number else "PART",
-                    })
-
-                canonical = {
-                    "invoice_number": cand.invoice_number,
-                    "invoice_date": cand.invoice_date,
-                    "supplier_dealer_code": document.dealer.dealer_code if document.dealer else "DEALER-DEMO",
-                    "buyer_oem_id": cand.buyer_oem_id or "DAIMLER-DEMO",
-                    "currency": cand.currency,
-                    "subtotal": str(cand.subtotal_amount or (cand.total_amount - (cand.tax_amount or Decimal("0.0")))),
-                    "tax_amount": str(cand.tax_amount or Decimal("0.0")),
-                    "total_amount": str(cand.total_amount),
-                    "line_items": candidate_lines,
-                }
             else:
-                raise OneDMSException("Failed to construct canonical invoice representation", status_code=422)
+                # Convert content to text for LLM
+                if isinstance(content, bytes):
+                    # For PDFs, try to extract text first with pdfplumber
+                    try:
+                        import pdfplumber
+                        with pdfplumber.open(io.BytesIO(content)) as pdf:
+                            raw_text = "\n".join(
+                                page.extract_text() or "" for page in pdf.pages
+                            )
+                    except Exception:
+                        raw_text = content.decode("utf-8", errors="replace")
+                else:
+                    raw_text = content
 
-            # Ensure header supplier/buyer codes are populated
-            if not canonical.get("supplier_dealer_code") and document.dealer:
-                canonical["supplier_dealer_code"] = document.dealer.dealer_code
-            if not canonical.get("buyer_oem_id"):
-                canonical["buyer_oem_id"] = "DAIMLER-DEMO"
+                if raw_text.strip():
+                    if "pdf" in content_type.lower():
+                        extraction_result = await llm_extract_invoice(raw_text)
+                    else:
+                        extraction_result = await llm_normalize_any(raw_text, content_type)
 
-            # 7. Invoke Person 3 validation engine
-            rules_stmt = select(ValidationRule).where(
-                ValidationRule.document_type == "INVOICE",
-                ValidationRule.is_active == True,  # noqa: E712
-            )
-            rules_res = await session.execute(rules_stmt)
-            active_rules = rules_res.scalars().all()
+                if not extraction_result.success:
+                    raise OneDMSException(
+                        extraction_result.error_message or "Extraction failed after LLM fallback",
+                        status_code=422,
+                    )
 
-            rules_config_list = [
-                {
-                    "rule_code": r.rule_code,
-                    "severity": r.severity,
-                    "rule_config": r.rule_config,
-                }
-                for r in active_rules
-            ]
+            # 7. Transform to canonical representation
+            canonical: dict[str, Any]
+            dealer_code = document.dealer.dealer_code if document.dealer else None
 
-            # Validation context callbacks
-            def is_registered_dealer(d_code: str) -> bool:
-                if document.dealer and document.dealer.dealer_code == d_code:
-                    return True
-                return True
+            # Always pass the parsed data extract through the LLM to map to OEM standard payload
+            raw_extracted_data = extraction_result.source_data
+            if extraction_result.canonical_candidate is not None:
+                # If local pdfplumber or LLM fallback structured it, pass that structure to the LLM mapper
+                raw_extracted_data = extraction_result.canonical_candidate.model_dump(mode="json")
 
-            def is_duplicate_invoice(d_code: str, inv_no: str, inv_date: str) -> bool:
-                return False
+            try:
+                candidate = await llm_map_to_canonical(raw_extracted_data)
+                canonical = await WorkflowService._build_canonical_from_candidate(
+                    candidate, dealer_code
+                )
+            except Exception as exc:
+                raise OneDMSException(f"Failed to map data extract to canonical invoice: {exc}", status_code=422)
+
+            # Ensure header supplier code is populated from document relationship
+            if not canonical.get("supplier_dealer_code") and dealer_code:
+                canonical["supplier_dealer_code"] = dealer_code
+
+            # 8. Invoke validation engine with real DB context
+            rules_config_list = await WorkflowService._load_validation_rules(session)
+
+            # Build validation context with real database lookups
+            # We need to capture the session in closures for sync callbacks
+            # Since validation is sync, we pre-fetch the necessary data
+            dealer_code_for_validation = canonical.get("supplier_dealer_code", "")
+            dealer_exists = await WorkflowService._is_registered_dealer(session, dealer_code_for_validation) if dealer_code_for_validation else False
+
+            inv_number = canonical.get("invoice_number", "")
+            inv_date = canonical.get("invoice_date", "")
+            is_duplicate = await WorkflowService._is_duplicate_invoice(
+                session, dealer_code_for_validation, inv_number, inv_date
+            ) if dealer_code_for_validation and inv_number and inv_date else False
 
             context = ValidationContext(
-                is_registered_dealer=is_registered_dealer,
-                is_duplicate_invoice=is_duplicate_invoice,
+                is_registered_dealer=lambda d_code: dealer_exists if d_code == dealer_code_for_validation else False,
+                is_duplicate_invoice=lambda d, inv, dt: is_duplicate if (d == dealer_code_for_validation and inv == inv_number and dt == inv_date) else False,
             )
 
             validation_findings = validate_canonical_payload(canonical, rules_config_list, context)
             overall_status = get_overall_status(validation_findings)
 
-            # 8. Record safe _onedms review metadata in canonical_payload
+            # 9. Record metadata in canonical_payload
             raw_issues = [
                 {
                     "rule_code": f.rule_code,
@@ -433,7 +490,7 @@ class WorkflowService:
                 },
             }
 
-            # 9. Status transitions
+            # 10. Status transitions
             if overall_status == "INVALID":
                 doc_status = "REVIEW_REQUIRED"
                 inv_validation_status = "INVALID"
@@ -457,12 +514,12 @@ class WorkflowService:
             tax_num = Decimal(str(canonical.get("tax_amount") or 0)).quantize(Decimal("0.01"))
             total_num = Decimal(str(canonical.get("total_amount") or (subtotal_num + tax_num))).quantize(Decimal("0.01"))
 
-            # 10. Atomic Persistence (update existing or create new)
+            # 11. Atomic Persistence (update existing or create new)
             if existing_invoice is not None:
                 invoice = existing_invoice
                 invoice.invoice_number = str(canonical.get("invoice_number"))
                 invoice.invoice_date = parsed_date
-                invoice.buyer_oem_id = str(canonical.get("buyer_oem_id"))
+                invoice.buyer_oem_id = str(canonical.get("buyer_oem_id") or "")
                 invoice.currency = str(canonical.get("currency") or "INR")[:3]
                 invoice.subtotal = subtotal_num
                 invoice.tax_amount = tax_num
@@ -478,7 +535,7 @@ class WorkflowService:
                     document_id=document.id,
                     invoice_number=str(canonical.get("invoice_number")),
                     invoice_date=parsed_date,
-                    buyer_oem_id=str(canonical.get("buyer_oem_id")),
+                    buyer_oem_id=str(canonical.get("buyer_oem_id") or ""),
                     currency=str(canonical.get("currency") or "INR")[:3],
                     subtotal=subtotal_num,
                     tax_amount=tax_num,

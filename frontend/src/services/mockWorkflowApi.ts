@@ -255,40 +255,6 @@ export const mockUploadDocument = async (
   return uploaded;
 };
 
-export const mockUploadJson = async (payload: {
-  dealer_id: string;
-  dms_id: string;
-  payload: Record<string, unknown>;
-}): Promise<DocumentDetail> => {
-  await delay(500);
-  const id = Math.max(...mockDocuments.map((item) => item.id)) + 1;
-
-  const uploaded: DocumentDetail = {
-    id,
-    dealer_code: payload.dealer_id,
-    dealer_name: payload.dealer_id,
-    dms_name: payload.dms_id,
-    source_type: 'json',
-    source_filename: `submission-${id}.json`,
-    received_at: new Date().toISOString(),
-    processing_status: 'received',
-    validation_status: 'pending',
-    review_status: 'pending',
-    summary: 'JSON payload accepted and queued.',
-    has_findings: false,
-    findings_count: 0,
-    invoice_id: null,
-    source_content_type: 'application/json',
-    source_size_bytes: JSON.stringify(payload.payload).length,
-    checksum_sha256: `mock-${id}`,
-    last_error: null,
-  };
-
-  mockDocuments = [uploaded, ...mockDocuments];
-  mockSources.set(id, new Blob([JSON.stringify(payload.payload, null, 2)], { type: 'application/json' }));
-  return uploaded;
-};
-
 export const mockProcessDocument = async (documentId: Id): Promise<DocumentDetail> => {
   await delay(1000);
   const target = mockDocuments.find((item) => item.id === documentId);
