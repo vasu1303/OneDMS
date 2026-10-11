@@ -167,12 +167,6 @@ export interface DocumentUploadPayload {
   file: File;
 }
 
-export interface JsonDocumentSubmission {
-  dealer_id: string;
-  dms_id: string;
-  payload: Record<string, unknown>;
-}
-
 export interface InvoicePatchPayload {
   header?: Partial<InvoiceHeader>;
   line_items?: Array<Partial<InvoiceLineItem> & { id?: Id; line_number: number }>;

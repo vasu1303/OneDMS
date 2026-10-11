@@ -1,0 +1,3 @@
+InvoiceNo,Date,Dealer,Currency,SubTotal,Tax,Total,Item,Desc,Qty,Price
+CSV-9901,2026-10-15,DAIMLER-DEMO,USD,1500.00,150.00,1650.00,PT-100,Brake Pad Set,4,250.00
+CSV-9901,2026-10-15,DAIMLER-DEMO,USD,,,,PT-101,Rotor Assembly,2,250.00
